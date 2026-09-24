@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
-Hook PreToolUse (Write|Edit|MultiEdit): guarda de reuso.
+PreToolUse hook (Write|Edit|MultiEdit): reuse guard.
 
-Antes de eu gravar codigo novo, procura no indice do repo se aquilo ja existe.
-O ponto de intervencao e este e nao a revisao: quando a funcao duplicada ja
-esta escrita, o custo de remover e social, nao tecnico — alguem precisa admitir
-que refez. Antes de gravar, e so nao escrever.
+Before new code reaches disk, search the repo index for an equivalent: by
+symbol name, and by body fingerprint for clones written under another name.
 
-Regras (herdadas do recall.py — o silencio e o padrao):
-  - So fala acima de um limiar. Sugestao fraca gasta contexto e desvia foco.
-  - Nao repete o mesmo aviso duas vezes na sessao.
-  - Nunca bloqueia: injeta contexto e deixa a decisao para o modelo.
-  - Nunca demora: estourou o orcamento, sai calado.
-  - Falha sempre em silencio.
+Operating rules:
+  - Only speaks above a score threshold.
+  - Never warns twice for the same symbol in one session.
+  - Never blocks: it injects context, the model decides.
+  - Never stalls: over budget, it exits silently.
+  - Always fails silently.
 """
 
 import json
@@ -21,8 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-# O motor mora ao lado deste arquivo: instalacao autocontida, sem depender
-# de onde o usuario guarda o resto das ferramentas dele.
+# The engine lives next to this file, so the install is self-contained.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 T0 = time.time()
@@ -31,8 +28,7 @@ MIN_SCORE = 7.0           # calibrado: nome igual ~14, parentesco real ~8-10
 MAX_HITS = 4
 MAX_SYMS = 6              # arquivo grande: os primeiros simbolos ja dizem o tema
 
-# Tudo que o guarda escreve vai para um lugar so, fora do repo e fora do
-# ~/.claude. Sobrescreve com QUALIDADE_GUARD_HOME se quiser outro lugar.
+# Everything written goes here, never inside the user's repository.
 HOME_DIR = Path(os.environ.get("QUALIDADE_GUARD_HOME")
                 or (Path.home() / ".qualidade-guard"))
 STATE_DIR = HOME_DIR / "estado"
@@ -68,7 +64,7 @@ def save_state(sid: str, st: dict):
 
 
 def new_code(tool: str, ti: dict) -> str:
-    """O texto que esta prestes a entrar no disco."""
+    """The text about to hit the disk."""
     if tool == "Write":
         return ti.get("content") or ""
     if tool == "Edit":
@@ -108,10 +104,9 @@ def main() -> int:
     if not syms:
         return 0          # nao declara nada novo: nao ha o que duplicar
 
-    # Simbolo que o arquivo-alvo JA declara nao e duplicacao — e edicao do que
-    # existe. Sem este filtro, mexer no corpo de uma funcao dispara aviso de
-    # que ela "ja existe", apontando para a propria linha que se esta
-    # editando. Ruido assim e o que faz o usuario desligar o hook.
+    # Skip symbols the target file already declares - otherwise editing a
+    # function warns that the function exists, pointing at the line you're
+    # editing.
     target = Path(fpath)
     if target.exists():
         try:
@@ -136,10 +131,9 @@ def main() -> int:
     except Exception:
         rel_self = ""
 
-    # Clone: o corpo que vou gravar ja existe com outro nome. E o caso que a
-    # busca por nome NUNCA acha — handleCreditError e handleDebitError sao o
-    # mesmo corpo, e nenhuma consulta por nome relaciona os dois. Sem isto, o
-    # guarda so cobre quem repete o nome, que e a metade facil do problema.
+    # Clone: the body is already in the repo under a different name. A name
+    # query never finds this - handleCreditError and handleDebitError are the
+    # same body and nothing relates them by name.
     clone_blocks = []
     try:
         idx = {}
@@ -178,7 +172,7 @@ def main() -> int:
 
     parts = []
 
-    # Convencoes do repo: uma vez por sessao, na primeira escrita de codigo.
+    # Repo conventions: once per session, on the first code write.
     if not st.get("conv"):
         conv = CONV_DIR / f"{root.name}.md"
         if conv.exists():
