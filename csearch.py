@@ -1,0 +1,568 @@
+#!/usr/bin/env python3
+"""
+csearch — indice de simbolos do repositorio atual.
+
+Responde "isso ja existe aqui?" antes de escrever codigo novo. O indice e
+DERIVADO DO DISCO, sempre: nenhuma linha dele e escrita a mao. Uma nota pode
+envelhecer mentindo; um indice reconstruido a cada consulta, nao.
+
+Uso:
+    csearch.py <termos>              busca no repo do diretorio atual
+    csearch.py --json <termos>       saida para agente
+    csearch.py --stats               tamanho do indice
+    csearch.py --rebuild             forca reconstrucao total
+    csearch.py --repo <path>         aponta outro repo
+
+Incremental: so le arquivo cujo mtime mudou desde a ultima passada.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import unicodedata
+from pathlib import Path
+
+CACHE_DIR = Path(os.environ.get("QUALIDADE_GUARD_HOME")
+                 or (Path.home() / ".qualidade-guard")) / "cache"
+
+# Muda quando o formato do indice muda: cache velho e descartado, nao lido
+# torto. Indice que mente em silencio e pior que indice ausente.
+INDEX_V = 2
+
+SKIP_DIRS = {
+    "node_modules", ".git", "dist", "build", ".next", "out", "vendor",
+    "__pycache__", "target", ".venv", "venv", "coverage", ".turbo",
+    ".idea", ".vscode", "storage", "bootstrap", "public", "assets",
+    "ios", "android", ".expo", "migrations", ".cache", "tmp", "logs",
+    ".pytest_cache", "bower_components", "Pods", ".gradle", "bin", "obj",
+}
+
+EXTS = {
+    ".ts": "ts", ".tsx": "ts", ".js": "ts", ".jsx": "ts", ".mjs": "ts",
+    ".cjs": "ts", ".vue": "ts", ".svelte": "ts",
+    ".php": "php", ".py": "py", ".rs": "rs", ".go": "go",
+}
+
+SKIP_FILE = re.compile(
+    r"(\.min\.|\.d\.ts$|\.test\.|\.spec\.|\.stories\.|-lock\.|\.config\.)"
+)
+
+MAX_BYTES = 400_000
+
+# ---------------------------------------------------------------- extracao
+
+# Cada padrao devolve (kind, nome). O objetivo nao e um parser correto — e
+# recall alto e barato: perder um simbolo custa uma sugestao; um parser de
+# verdade por linguagem custa manutencao eterna.
+PATTERNS = {
+    "ts": [
+        ("fn",    re.compile(r"^\s*export\s+(?:async\s+)?function\s+(\w+)")),
+        ("fn",    re.compile(r"^\s*export\s+const\s+(\w+)\s*[:=]\s*(?:async\s*)?[\(<]")),
+        ("const", re.compile(r"^\s*export\s+const\s+(\w+)\s*[:=]")),
+        ("class", re.compile(r"^\s*export\s+(?:default\s+)?(?:abstract\s+)?class\s+(\w+)")),
+        ("type",  re.compile(r"^\s*export\s+(?:interface|type|enum)\s+(\w+)")),
+        ("fn",    re.compile(r"^(?:async\s+)?function\s+(\w+)")),
+        ("fn",    re.compile(r"^const\s+(\w+)\s*[:=]\s*(?:async\s*)?\(")),
+        ("class", re.compile(r"^(?:abstract\s+)?class\s+(\w+)")),
+        ("route", re.compile(r"(?:router|app)\.(?:get|post|put|patch|delete|use)\(\s*['\"`]([^'\"`]+)")),
+    ],
+    "php": [
+        ("class", re.compile(r"^\s*(?:abstract\s+|final\s+)?class\s+(\w+)")),
+        ("class", re.compile(r"^\s*(?:interface|trait)\s+(\w+)")),
+        ("fn",    re.compile(r"^\s*(?:public|protected|private)?\s*(?:static\s+)?function\s+(\w+)\s*\(")),
+        ("route", re.compile(r"Route::(?:get|post|put|patch|delete|apiResource|resource)\(\s*['\"]([^'\"]+)")),
+    ],
+    "py": [
+        ("fn",    re.compile(r"^\s*(?:async\s+)?def\s+(\w+)")),
+        ("class", re.compile(r"^\s*class\s+(\w+)")),
+    ],
+    "rs": [
+        ("fn",    re.compile(r"^\s*pub(?:\([^)]*\))?\s+(?:async\s+)?fn\s+(\w+)")),
+        ("fn",    re.compile(r"^\s*(?:async\s+)?fn\s+(\w+)")),
+        ("class", re.compile(r"^\s*pub(?:\([^)]*\))?\s+(?:struct|enum|trait)\s+(\w+)")),
+    ],
+    "go": [
+        ("fn",    re.compile(r"^func\s+(?:\([^)]*\)\s*)?(\w+)")),
+        ("class", re.compile(r"^type\s+(\w+)\s+(?:struct|interface)")),
+    ],
+}
+
+PRIVATE_PY = re.compile(r"^_")
+
+
+def extract(path: Path, lang: str):
+    """Le um arquivo e devolve seus simbolos de topo."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+    return extract_text(text, lang)
+
+
+def extract_text(text: str, lang: str):
+    """Mesma extracao, sobre texto em memoria (codigo ainda nao gravado)."""
+    out, seen = [], set()
+    for i, line in enumerate(text.splitlines(), 1):
+        if len(line) > 400:
+            continue
+        # Varre TODOS os padroes da linha, nao so o primeiro. Parar no primeiro
+        # perde simbolo em codigo compacto ('class X { public function y()' na
+        # mesma linha) e em arquivo de rotas, onde varias rotas dividem a linha.
+        # line_names evita a duplicata real: o mesmo nome casando em dois
+        # padroes ('export const f = (' e fn e const ao mesmo tempo).
+        line_names = set()
+        for kind, rx in PATTERNS.get(lang, []):
+            for m in rx.finditer(line):
+                name = m.group(1)
+                if not name or len(name) < 3:
+                    continue
+                if lang == "py" and PRIVATE_PY.match(name):
+                    continue
+                if name in line_names:
+                    continue
+                line_names.add(name)
+                key = (kind, name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({
+                    "n": name,
+                    "k": kind,
+                    "l": i,
+                    "s": line.strip()[:140],
+                })
+    return out
+
+
+# ------------------------------------------------------------------ limpeza
+
+STR_PATTERNS = [
+    re.compile(r'"(?:\\.|[^"\\])*"'),
+    re.compile(r"'(?:\\.|[^'\\])*'"),
+    re.compile(r"`(?:\\.|[^`\\])*`"),
+]
+LINE_COMMENT = {
+    "ts": re.compile(r"//.*$"), "rs": re.compile(r"//.*$"),
+    "go": re.compile(r"//.*$"),
+    "php": re.compile(r"(//|#(?!\[)).*$"), "py": re.compile(r"#.*$"),
+}
+
+
+def strip_noise(line: str, lang: str) -> str:
+    """Tira string e comentario: sem isso, '{' dentro de texto quebra a conta."""
+    for rx in STR_PATTERNS:
+        line = rx.sub('""', line)
+    rx = LINE_COMMENT.get(lang)
+    return rx.sub("", line) if rx else line
+
+
+def clean_lines(text: str, lang: str):
+    out, in_block = [], False
+    for raw in text.splitlines():
+        line = raw
+        if lang != "py":
+            if in_block:
+                if "*/" in line:
+                    line = line.split("*/", 1)[1]
+                    in_block = False
+                else:
+                    out.append("")
+                    continue
+            line = re.sub(r"/\*.*?\*/", "", line)
+            if "/*" in line:
+                line = line.split("/*", 1)[0]
+                in_block = True
+        out.append(strip_noise(line, lang))
+    return out
+
+
+# ------------------------------------------------------------------ funcoes
+
+DECL = {
+    "ts": re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:public\s+|private\s+|protected\s+|static\s+|async\s+)*"
+                     r"(?:function\s+(\w+)|(\w+)\s*[:=]\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>)"
+                     r"|(\w+)\s*\([^)]*\)\s*(?::\s*[\w<>\[\]|\s,]+)?\s*\{)"),
+    "php": re.compile(r"^\s*(?:public|protected|private)?\s*(?:static\s+)?function\s+(\w+)\s*\("),
+    "rs":  re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)"),
+    "go":  re.compile(r"^func\s+(?:\([^)]*\)\s*)?(\w+)"),
+    "py":  re.compile(r"^(\s*)(?:async\s+)?def\s+(\w+)"),
+}
+
+# Palavras que abrem bloco mas nao sao funcao — sem isto 'if (x) {' vira funcao.
+NAO_FUNCAO = {"if", "for", "while", "switch", "catch", "do", "else", "foreach",
+              "return", "match", "case", "try", "function", "fn", "def", "new"}
+
+
+def functions(text: str, lang: str):
+    """
+    [{name, start, end, body, raw}] — corpo delimitado por chave ou indentacao.
+
+    `body` e a versao sem string nem comentario (para contar chave e token);
+    `raw` e o texto original, indice a indice. Mostrar `body` ao usuario
+    exibiria `readFileSync("", "")` — evidencia mutilada nao e evidencia.
+    """
+    lines = clean_lines(text, lang)
+    orig = text.splitlines()
+    rx = DECL.get(lang)
+    if not rx:
+        return []
+    out = []
+
+    if lang == "py":
+        for i, line in enumerate(lines):
+            m = rx.match(line)
+            if not m:
+                continue
+            indent, name = len(m.group(1)), m.group(2)
+            end = len(lines)
+            for j in range(i + 1, len(lines)):
+                s = lines[j]
+                if s.strip() and (len(s) - len(s.lstrip())) <= indent:
+                    end = j
+                    break
+            out.append({"name": name, "start": i + 1, "end": end,
+                        "body": lines[i:end], "raw": orig[i:end]})
+        return out
+
+    for i, line in enumerate(lines):
+        m = rx.match(line)
+        if not m:
+            continue
+        name = next((g for g in m.groups() if g), None)
+        if not name or name in NAO_FUNCAO:
+            continue
+        # acha a chave de abertura (pode estar na linha seguinte)
+        depth, start_j, opened = 0, None, False
+        for j in range(i, min(i + 4, len(lines))):
+            if "{" in lines[j]:
+                start_j = j
+                break
+        if start_j is None:
+            continue
+        for j in range(start_j, len(lines)):
+            for ch in lines[j]:
+                if ch == "{":
+                    depth += 1
+                    opened = True
+                elif ch == "}":
+                    depth -= 1
+            if opened and depth <= 0:
+                out.append({"name": name, "start": i + 1, "end": j + 1,
+                            "body": lines[i:j + 1], "raw": orig[i:j + 1]})
+                break
+    return out
+
+
+
+# ------------------------------------------------------ impressao digital
+
+# Identificador vira 'v': clone com os nomes trocados continua sendo clone.
+# E exatamente o caso que a busca por nome nao ve — handleCreditError,
+# handleDebitError e handlePixError sao o mesmo corpo com tres nomes.
+FP_TOK = re.compile(r"[A-Za-z_]\w*|[{}()\[\];,.]|[-+*/%=<>!&|]+|\d+")
+FP_KEEP = {
+    "if", "else", "elif", "for", "foreach", "while", "return", "function",
+    "new", "try", "catch", "finally", "switch", "case", "break", "continue",
+    "public", "private", "protected", "static", "const", "let", "var",
+    "await", "async", "throw", "def", "class", "fn", "pub", "match", "use",
+}
+FP_MIN = 60          # abaixo disso, bloco coincide por acaso (getter, CRUD raso)
+
+
+def fingerprint(body):
+    toks = [t if (t in FP_KEEP or not re.match(r"^[A-Za-z_]\w*$", t)) else "v"
+            for l in body for t in FP_TOK.findall(l)]
+    if len(toks) < FP_MIN:
+        return None, len(toks)
+    return hashlib.sha1(" ".join(toks).encode()).hexdigest()[:16], len(toks)
+
+
+def fingerprints(text: str, lang: str):
+    out = []
+    for f in functions(text, lang):
+        fp, n = fingerprint(f["body"])
+        if fp:
+            out.append({"n": f["name"], "l": f["start"], "fp": fp, "t": n})
+    return out
+
+
+# ---------------------------------------------------------------- indice
+
+def repo_root(start: Path) -> Path:
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(start), capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return Path(r.stdout.strip())
+    except Exception:
+        pass
+    return start
+
+
+def cache_path(root: Path) -> Path:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", root.name).strip("-") or "repo"
+    h = hashlib.sha1(str(root).encode()).hexdigest()[:8]
+    return CACHE_DIR / f"{slug}-{h}.json"
+
+
+def walk(root: Path):
+    """Todos os arquivos de codigo do repo, sem entrar em lixo."""
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            continue
+        for e in entries:
+            name = e.name
+            if name.startswith(".") and name not in {".claude"}:
+                continue
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    if name not in SKIP_DIRS:
+                        stack.append(Path(e.path))
+                    continue
+                ext = os.path.splitext(name)[1]
+                if ext not in EXTS or SKIP_FILE.search(name):
+                    continue
+                st = e.stat()
+                if st.st_size > MAX_BYTES:
+                    continue
+                yield Path(e.path), EXTS[ext], int(st.st_mtime)
+            except OSError:
+                continue
+
+
+def build(root: Path, force: bool = False, budget: float = 0.0) -> dict:
+    """Reconstroi o indice, relendo apenas o que mudou."""
+    cp = cache_path(root)
+    old = {}
+    if cp.exists() and not force:
+        try:
+            prev = json.loads(cp.read_text())
+            old = prev.get("files", {}) if prev.get("v") == INDEX_V else {}
+        except Exception:
+            old = {}
+
+    files, reused, t0 = {}, 0, time.time()
+    for path, lang, mtime in walk(root):
+        rel = str(path.relative_to(root))
+        prev = old.get(rel)
+        if prev and prev.get("m") == mtime:
+            files[rel] = prev
+            reused += 1
+            continue
+        if budget and (time.time() - t0) > budget:
+            # Estourou o orcamento: guarda o que deu e sai. O proximo turno
+            # continua de onde parou — melhor um indice parcial agora que um
+            # completo depois de travar a edicao do usuario.
+            if prev:
+                files[rel] = prev
+            continue
+        try:
+            texto = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            texto = ""
+        files[rel] = {"m": mtime, "g": lang, "y": extract_text(texto, lang),
+                      "p": fingerprints(texto, lang)}
+
+    data = {
+        "v": INDEX_V,
+        "root": str(root),
+        "built": int(time.time()),
+        "files": files,
+        "nfiles": len(files),
+        "nsyms": sum(len(f.get("y", [])) for f in files.values()),
+        "reused": reused,
+    }
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = cp.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.replace(cp)
+    except Exception:
+        pass
+    return data
+
+
+def load(root: Path, max_age: int = 90, budget: float = 0.0) -> dict:
+    """Indice fresco o bastante. Abaixo de max_age, usa o cache sem revalidar."""
+    cp = cache_path(root)
+    if cp.exists():
+        try:
+            data = json.loads(cp.read_text())
+            if (data.get("v") == INDEX_V
+                    and (time.time() - data.get("built", 0)) < max_age):
+                return data
+        except Exception:
+            pass
+    return build(root, budget=budget)
+
+
+# ---------------------------------------------------------------- busca
+
+def fold(s: str) -> str:
+    s = unicodedata.normalize("NFD", s.lower())
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+
+
+SPLIT = re.compile(r"[^a-z0-9]+")
+CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def tokens(s: str):
+    """createUserCart -> {create, user, cart}. O casamento util e por pedaco."""
+    s = CAMEL.sub(" ", s)
+    return {t for t in SPLIT.split(fold(s)) if len(t) > 2}
+
+
+# Ruido de nomenclatura: casa com meio repo e nao prova parentesco nenhum.
+GENERIC = {
+    "get", "set", "new", "run", "use", "the", "and", "for", "all", "any",
+    "create", "update", "delete", "remove", "find", "fetch", "load", "save",
+    "make", "build", "send", "check", "validate", "parse", "format", "render",
+    "add", "insert", "select", "process", "execute", "apply", "store", "show",
+    "data", "item", "items", "list", "value", "index", "main", "init",
+    "handler", "handle", "type", "types", "util", "utils", "helper", "helpers",
+    "common", "base", "core", "app", "src", "lib", "api", "service", "services",
+    "controller", "model", "component", "components", "page", "pages", "test",
+}
+
+
+def search(data: dict, query: str, limit: int = 8, exclude: str = ""):
+    qt = tokens(query)
+
+    # Nome de uma palavra so, e curta ('status', 'index', 'store', 'moment'):
+    # em framework isso e slot de convencao, nao conceito. Todo controller
+    # Laravel tem um 'status'; casar por ele devolve o projeto inteiro e nao
+    # prova parentesco com nada. Palavra unica longa ('frobnicate') ainda vale.
+    if len(qt) == 1 and max((len(t) for t in qt), default=0) < 8:
+        return []
+
+    strong = qt - GENERIC
+    if not strong:
+        strong = qt
+    if not strong:
+        return []
+
+    results = []
+    for rel, f in data.get("files", {}).items():
+        if exclude and rel == exclude:
+            continue
+        ptok = tokens(rel)
+        for sym in f.get("y", []):
+            name = sym["n"]
+            ntok = tokens(name)
+            if not ntok:
+                continue
+
+            hit = strong & ntok
+            if not hit:
+                # sem casamento no nome, o caminho sozinho nao sustenta
+                continue
+
+            # Um unico token em comum quase nunca e prova: 'createOrder' e
+            # 'createInvoice' compartilham um e nao tem parentesco. Exige duas
+            # evidencias — dois tokens, ou um nome contido no outro, ou o
+            # mesmo nome. Este e o filtro que separa achado de ruido.
+            contained = ((len(ntok) >= 2 and ntok <= qt) or
+                         (len(qt) >= 2 and qt <= ntok))
+            if not (len(hit) >= 2 or contained
+                    or fold(name) == fold(query.strip())):
+                continue
+
+            # Cobertura nos dois sentidos: quanto da consulta o simbolo cobre,
+            # e quanto do simbolo a consulta explica. So o primeiro faria
+            # 'createOrderWithPaymentAndInvoice' casar com 'createOrder'.
+            score = 4.0 * (len(hit) / len(strong)) + 2.0 * (len(hit) / len(ntok))
+
+            # Contencao: o nome existente cabe inteiro dentro do novo
+            # ('formatCurrency' dentro de 'formatCurrencyBRL'). E o sinal mais
+            # forte de reimplementacao que existe — e o que a formula de
+            # cobertura sozinha PUNE, porque nome novo mais longo dilui a
+            # fracao. Sem este bonus, quanto mais especifico o nome que eu
+            # invento, menos o indice me avisa que ja existe o geral.
+            if len(ntok) >= 2 and ntok <= qt:
+                score += 4.0
+            elif len(qt) >= 2 and qt <= ntok:
+                score += 3.0            # o inverso: escrevo o geral, existe o especifico
+
+            if fold(name) == fold(query.strip()):
+                score += 6.0            # mesmo nome: e o caso que importa
+            if strong & ptok:
+                score += 1.0            # caminho tambem fala do assunto
+            if sym["k"] in ("fn", "class"):
+                score += 0.5
+            if "resources/views/" in rel or "/examples/" in rel:
+                score -= 2.0    # template nao e codigo reaproveitavel
+            if len(hit) >= 2:
+                score += 1.0
+
+            results.append({
+                "name": name, "kind": sym["k"], "path": rel,
+                "line": sym["l"], "sig": sym["s"], "score": round(score, 2),
+            })
+
+    results.sort(key=lambda r: (-r["score"], r["path"]))
+    return results[:limit]
+
+
+# ---------------------------------------------------------------- cli
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("query", nargs="*")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--rebuild", action="store_true")
+    ap.add_argument("--stats", action="store_true")
+    ap.add_argument("--repo")
+    ap.add_argument("--limit", type=int, default=8)
+    ap.add_argument("--exclude", default="")
+    a = ap.parse_args()
+
+    root = repo_root(Path(a.repo).resolve() if a.repo else Path.cwd())
+
+    if a.rebuild:
+        d = build(root, force=True)
+        print(f"{root.name}: {d['nfiles']} arquivos, {d['nsyms']} simbolos")
+        return 0
+
+    data = load(root)
+
+    if a.stats or not a.query:
+        age = int(time.time() - data.get("built", 0))
+        print(f"repo   : {data.get('root')}")
+        print(f"indice : {data.get('nfiles', 0)} arquivos, "
+              f"{data.get('nsyms', 0)} simbolos ({age}s atras)")
+        return 0
+
+    hits = search(data, " ".join(a.query), a.limit, a.exclude)
+
+    if a.json:
+        print(json.dumps({"root": str(root), "hits": hits}))
+        return 0
+
+    if not hits:
+        print("nada parecido no indice.")
+        return 0
+
+    for h in hits:
+        print(f"{h['score']:6.1f}  {h['kind']:<5} {h['name']}")
+        print(f"        {h['path']}:{h['line']}")
+        print(f"        {h['sig']}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
