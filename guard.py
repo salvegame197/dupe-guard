@@ -24,15 +24,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 T0 = time.time()
 BUDGET = 2.5              # segundos: acima disso a edicao trava e vira estorvo
-MIN_SCORE = 7.0           # calibrado: nome igual ~14, parentesco real ~8-10
+MIN_SCORE = 7.0           # calibrated: exact name ~14, real kinship ~8-10
 MAX_HITS = 4
 MAX_SYMS = 6              # in a big file, the first symbols already give the theme
 
 # Everything written goes here, never inside the user's repository.
 HOME_DIR = Path(os.environ.get("QUALIDADE_GUARD_HOME")
                 or (Path.home() / ".qualidade-guard"))
-STATE_DIR = HOME_DIR / "estado"
-CONV_DIR = HOME_DIR / "convencoes"
+STATE_DIR = HOME_DIR / "state"
+CONV_DIR = HOME_DIR / "conventions"
 
 
 def out(text: str):
@@ -102,7 +102,7 @@ def main() -> int:
 
     syms = csearch.extract_text(code, lang)
     if not syms:
-        return 0          # nao declara nada novo: nao ha o que duplicar
+        return 0          # declares nothing new: nothing to duplicate
 
     # Skip symbols the target file already declares - otherwise editing a
     # function warns that the function exists, pointing at the line you're
@@ -141,14 +141,14 @@ def main() -> int:
             for fp in f.get("p", []):
                 idx.setdefault(fp["fp"], []).append((rel, fp["n"], fp["l"], fp["t"]))
         for nf in csearch.fingerprints(code, lang):
-            iguais = [x for x in idx.get(nf["fp"], []) if x[0] != rel_self]
-            if not iguais or nf["fp"] in warned:
+            same = [x for x in idx.get(nf["fp"], []) if x[0] != rel_self]
+            if not same or nf["fp"] in warned:
                 continue
             fresh_fp = nf["fp"]
-            onde = "\n".join(f"  - `{r}:{l}` → `{n}`" for r, n, l, _ in iguais[:3])
+            where = "\n".join(f"  - `{r}:{l}` → `{n}`" for r, n, l, _ in same[:3])
             clone_blocks.append(
                 f"**`{nf['n']}`** — this exact body ({nf['t']} tokens) already "
-                f"exists under another name:\n{onde}")
+                f"exists under another name:\n{where}")
             warned = warned | {fresh_fp}
     except Exception:
         pass
