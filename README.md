@@ -62,6 +62,7 @@ Python, Rust, Go.
 ## Install
 
 Requires Python 3.9+ and git. No dependencies outside the standard library.
+Tested on 3.9, 3.11 and 3.12, macOS and Linux. The installer is a bash script.
 
 ```bash
 git clone https://github.com/<you>/dupe-guard
@@ -70,7 +71,9 @@ cd dupe-guard
 ```
 
 The installer registers the hook in `~/.claude/settings.json`, backing the file
-up first. It refuses to run if a `dupe-guard` entry is already registered.
+up first. It records the absolute path of the Python that ran it, because Claude
+Code may launch hooks with a reduced `PATH` where a bare `python3` resolves to a
+system stub. It refuses to run if a guard is already registered.
 
 To uninstall: `./uninstall.sh`
 
@@ -78,6 +81,11 @@ To uninstall: `./uninstall.sh`
 
 Everything goes to `~/.dupe-guard/` (`cache/`, `state/`, `conventions/`).
 Override with `DUPE_GUARD_HOME`. It writes nothing into your repositories.
+Session state older than 7 days is pruned automatically.
+
+The guard only acts inside git repositories. Outside one, the natural fallback
+would be to index the file's parent folder, and for `~/Documents/x.py` that is
+all of `~/Documents`.
 
 ## Per-repo conventions
 
@@ -92,6 +100,17 @@ DUPE_GUARD_HOME=/tmp/qg-demo python3 guard.py < examples/payload.json
 ```
 
 `examples/demo/` is a repository with a duplicate planted in it.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s test -v
+```
+
+Seven end-to-end cases run `guard.py` the way Claude Code does, JSON on stdin,
+against a throwaway git repo: clone detected, silence on unrelated code, silence
+on garbage input, other tools ignored, no repeated warning in a session, silence
+outside git, old state pruned.
 
 ## Licence
 

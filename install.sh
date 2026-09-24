@@ -34,7 +34,9 @@ shutil.copy2(cfg, bkp)
 
 rules.append({
     "matcher": "Write|Edit|MultiEdit",
-    "hooks": [{"type": "command", "command": f"python3 {target}"}],
+    # Absolute interpreter: Claude Code may launch hooks with a reduced PATH,
+    # where a bare "python3" resolves to a system stub (on macOS, Xcode's).
+    "hooks": [{"type": "command", "command": f"{sys.executable} {target}"}],
 })
 cfg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
