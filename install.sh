@@ -38,6 +38,11 @@ rules.append({
     # where a bare "python3" resolves to a system stub (on macOS, Xcode's).
     "hooks": [{"type": "command", "command": f"{sys.executable} {target}"}],
 })
+post = data["hooks"].setdefault("PostToolUse", [])
+post.append({
+    "matcher": "Bash",
+    "hooks": [{"type": "command", "command": f"{sys.executable} {target}"}],
+})
 cfg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
 print(f"registered: {target}")

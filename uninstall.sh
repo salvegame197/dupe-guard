@@ -9,22 +9,24 @@ from pathlib import Path
 here = str((Path(sys.argv[1]) / "guard.py").resolve())
 cfg = Path.home() / ".claude" / "settings.json"
 data = json.loads(cfg.read_text())
-rules = data.get("hooks", {}).get("PreToolUse", [])
+removed = 0
+for event in ("PreToolUse", "PostToolUse"):
+    rules = data.get("hooks", {}).get(event, [])
+    kept = []
+    for r in rules:
+        hs = [h for h in r.get("hooks", []) if here not in h.get("command", "")]
+        removed += len(r.get("hooks", [])) - len(hs)
+        if hs:
+            r["hooks"] = hs
+            kept.append(r)
+    if event in data.get("hooks", {}):
+        data["hooks"][event] = kept
 
-before = sum(len(r.get("hooks", [])) for r in rules)
-kept = []
-for r in rules:
-    hs = [h for h in r.get("hooks", []) if here not in h.get("command", "")]
-    if hs:
-        r["hooks"] = hs
-        kept.append(r)
-
-if sum(len(r["hooks"]) for r in kept) == before:
+if not removed:
     sys.exit("no entry from this folder found - nothing to do.")
 
 bkp = cfg.with_suffix(f".json.bkp-{time.strftime('%Y%m%d-%H%M%S')}")
 shutil.copy2(cfg, bkp)
-data["hooks"]["PreToolUse"] = kept
 cfg.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 print(f"removed. backup at {bkp}")
 PYEOF
