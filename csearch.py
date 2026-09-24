@@ -30,8 +30,8 @@ from pathlib import Path
 CACHE_DIR = Path(os.environ.get("QUALIDADE_GUARD_HOME")
                  or (Path.home() / ".qualidade-guard")) / "cache"
 
-# Muda quando o formato do indice muda: cache velho e descartado, nao lido
-# torto. Indice que mente em silencio e pior que indice ausente.
+# Bump when the index format changes: a stale cache is discarded rather than
+# misread. An index that lies silently is worse than no index.
 INDEX_V = 2
 
 SKIP_DIRS = {
@@ -54,11 +54,10 @@ SKIP_FILE = re.compile(
 
 MAX_BYTES = 400_000
 
-# ---------------------------------------------------------------- extracao
+# -------------------------------------------------------------- extraction
 
-# Cada padrao devolve (kind, nome). O objetivo nao e um parser correto — e
-# recall alto e barato: perder um simbolo custa uma sugestao; um parser de
-# verdade por linguagem custa manutencao eterna.
+# Each pattern yields (kind, name). These are heuristics, not parsers: high
+# recall, cheap to maintain. A missed symbol costs one suggestion.
 PATTERNS = {
     "ts": [
         ("fn",    re.compile(r"^\s*export\s+(?:async\s+)?function\s+(\w+)")),
@@ -110,11 +109,10 @@ def extract_text(text: str, lang: str):
     for i, line in enumerate(text.splitlines(), 1):
         if len(line) > 400:
             continue
-        # Varre TODOS os padroes da linha, nao so o primeiro. Parar no primeiro
-        # perde simbolo em codigo compacto ('class X { public function y()' na
-        # mesma linha) e em arquivo de rotas, onde varias rotas dividem a linha.
-        # line_names evita a duplicata real: o mesmo nome casando em dois
-        # padroes ('export const f = (' e fn e const ao mesmo tempo).
+        # Scan ALL patterns on the line, not just the first. Stopping at the
+        # first loses symbols in compact code ('class X { public function y()'
+        # on one line) and in route files, where several routes share a line.
+        # line_names dedupes a name matching two patterns at once.
         line_names = set()
         for kind, rx in PATTERNS.get(lang, []):
             for m in rx.finditer(line):
@@ -139,7 +137,7 @@ def extract_text(text: str, lang: str):
     return out
 
 
-# ------------------------------------------------------------------ limpeza
+# ------------------------------------------------------------------ cleanup
 
 STR_PATTERNS = [
     re.compile(r'"(?:\\.|[^"\\])*"'),
@@ -181,7 +179,7 @@ def clean_lines(text: str, lang: str):
     return out
 
 
-# ------------------------------------------------------------------ funcoes
+# ---------------------------------------------------------------- functions
 
 DECL = {
     "ts": re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:public\s+|private\s+|protected\s+|static\s+|async\s+)*"
@@ -193,7 +191,7 @@ DECL = {
     "py":  re.compile(r"^(\s*)(?:async\s+)?def\s+(\w+)"),
 }
 
-# Palavras que abrem bloco mas nao sao funcao — sem isto 'if (x) {' vira funcao.
+# Block openers that are not functions - without this, 'if (x) {' is a function.
 NAO_FUNCAO = {"if", "for", "while", "switch", "catch", "do", "else", "foreach",
               "return", "match", "case", "try", "function", "fn", "def", "new"}
 
@@ -236,7 +234,7 @@ def functions(text: str, lang: str):
         name = next((g for g in m.groups() if g), None)
         if not name or name in NAO_FUNCAO:
             continue
-        # acha a chave de abertura (pode estar na linha seguinte)
+        # find the opening brace (it may be on the next line)
         depth, start_j, opened = 0, None, False
         for j in range(i, min(i + 4, len(lines))):
             if "{" in lines[j]:
@@ -259,11 +257,11 @@ def functions(text: str, lang: str):
 
 
 
-# ------------------------------------------------------ impressao digital
+# ------------------------------------------------------------ fingerprint
 
-# Identificador vira 'v': clone com os nomes trocados continua sendo clone.
-# E exatamente o caso que a busca por nome nao ve — handleCreditError,
-# handleDebitError e handlePixError sao o mesmo corpo com tres nomes.
+# Identifiers collapse to 'v', so renaming does not hide a clone. This is
+# what a name search cannot see: handleCreditError, handleDebitError and
+# handlePixError are one body under three names.
 FP_TOK = re.compile(r"[A-Za-z_]\w*|[{}()\[\];,.]|[-+*/%=<>!&|]+|\d+")
 FP_KEEP = {
     "if", "else", "elif", "for", "foreach", "while", "return", "function",
@@ -291,7 +289,7 @@ def fingerprints(text: str, lang: str):
     return out
 
 
-# ---------------------------------------------------------------- indice
+# ----------------------------------------------------------------- index
 
 def repo_root(start: Path) -> Path:
     try:
@@ -361,9 +359,9 @@ def build(root: Path, force: bool = False, budget: float = 0.0) -> dict:
             reused += 1
             continue
         if budget and (time.time() - t0) > budget:
-            # Estourou o orcamento: guarda o que deu e sai. O proximo turno
-            # continua de onde parou — melhor um indice parcial agora que um
-            # completo depois de travar a edicao do usuario.
+            # Over budget: save what we have and leave. The next turn resumes
+            # from here. A partial index now beats a complete one that stalled
+            # the user's edit.
             if prev:
                 files[rel] = prev
             continue
@@ -407,7 +405,7 @@ def load(root: Path, max_age: int = 90, budget: float = 0.0) -> dict:
     return build(root, budget=budget)
 
 
-# ---------------------------------------------------------------- busca
+# --------------------------------------------------------------- search
 
 def fold(s: str) -> str:
     s = unicodedata.normalize("NFD", s.lower())
@@ -424,7 +422,7 @@ def tokens(s: str):
     return {t for t in SPLIT.split(fold(s)) if len(t) > 2}
 
 
-# Ruido de nomenclatura: casa com meio repo e nao prova parentesco nenhum.
+# Naming noise: matches half the repo and proves no relationship.
 GENERIC = {
     "get", "set", "new", "run", "use", "the", "and", "for", "all", "any",
     "create", "update", "delete", "remove", "find", "fetch", "load", "save",
@@ -440,10 +438,9 @@ GENERIC = {
 def search(data: dict, query: str, limit: int = 8, exclude: str = ""):
     qt = tokens(query)
 
-    # Nome de uma palavra so, e curta ('status', 'index', 'store', 'moment'):
-    # em framework isso e slot de convencao, nao conceito. Todo controller
-    # Laravel tem um 'status'; casar por ele devolve o projeto inteiro e nao
-    # prova parentesco com nada. Palavra unica longa ('frobnicate') ainda vale.
+    # Single short word ('status', 'index', 'store'): in a framework that is a
+    # convention slot, not a concept. Every Laravel controller has a 'status';
+    # matching on it returns the whole project. A long single word still counts.
     if len(qt) == 1 and max((len(t) for t in qt), default=0) < 8:
         return []
 
@@ -466,30 +463,29 @@ def search(data: dict, query: str, limit: int = 8, exclude: str = ""):
 
             hit = strong & ntok
             if not hit:
-                # sem casamento no nome, o caminho sozinho nao sustenta
+                # with no name match, the path alone is not enough
                 continue
 
-            # Um unico token em comum quase nunca e prova: 'createOrder' e
-            # 'createInvoice' compartilham um e nao tem parentesco. Exige duas
-            # evidencias — dois tokens, ou um nome contido no outro, ou o
-            # mesmo nome. Este e o filtro que separa achado de ruido.
+            # A single shared token is almost never proof: 'createOrder' and
+            # 'createInvoice' share one and are unrelated. Require two signals -
+            # two tokens, or one name contained in the other, or the same name.
+            # This is the filter that separates a finding from noise.
             contained = ((len(ntok) >= 2 and ntok <= qt) or
                          (len(qt) >= 2 and qt <= ntok))
             if not (len(hit) >= 2 or contained
                     or fold(name) == fold(query.strip())):
                 continue
 
-            # Cobertura nos dois sentidos: quanto da consulta o simbolo cobre,
-            # e quanto do simbolo a consulta explica. So o primeiro faria
-            # 'createOrderWithPaymentAndInvoice' casar com 'createOrder'.
+            # Coverage both ways: how much of the query the symbol covers, and
+            # how much of the symbol the query explains. The first alone would
+            # match 'createOrderWithPaymentAndInvoice' to 'createOrder'.
             score = 4.0 * (len(hit) / len(strong)) + 2.0 * (len(hit) / len(ntok))
 
-            # Contencao: o nome existente cabe inteiro dentro do novo
-            # ('formatCurrency' dentro de 'formatCurrencyBRL'). E o sinal mais
-            # forte de reimplementacao que existe — e o que a formula de
-            # cobertura sozinha PUNE, porque nome novo mais longo dilui a
-            # fracao. Sem este bonus, quanto mais especifico o nome que eu
-            # invento, menos o indice me avisa que ja existe o geral.
+            # Containment: the existing name fits whole inside the new one
+            # ('formatCurrency' inside 'formatCurrencyBRL'). Strongest signal of
+            # reimplementation there is - and the one coverage alone PENALISES,
+            # since a longer new name dilutes the fraction. Without this bonus,
+            # the more specific the invented name, the quieter the index.
             if len(ntok) >= 2 and ntok <= qt:
                 score += 4.0
             elif len(qt) >= 2 and qt <= ntok:

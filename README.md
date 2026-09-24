@@ -95,4 +95,4 @@ QUALIDADE_GUARD_HOME=/tmp/qg-demo python3 guard.py < exemplos/payload.json
 
 ## Licence
 
-MIT. Code comments are in Brazilian Portuguese.
+MIT.
