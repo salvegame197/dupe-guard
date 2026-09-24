@@ -46,6 +46,13 @@ class GuardTest(unittest.TestCase):
         self.home = self.tmp / "home"
         self.repo = self.tmp / "repo"
         shutil.copytree(DEMO, self.repo)
+        # copytree preserves the source mtimes, so whether the demo files look
+        # "recent" to the Bash path depended on when the checkout happened.
+        # Age everything; only files a test writes itself count as recent.
+        old = time.time() - 3600
+        for f in self.repo.rglob("*"):
+            if f.is_file():
+                os.utime(f, (old, old))
         subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
 
     def tearDown(self):
