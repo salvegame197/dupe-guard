@@ -26,7 +26,7 @@ T0 = time.time()
 BUDGET = 2.5              # segundos: acima disso a edicao trava e vira estorvo
 MIN_SCORE = 7.0           # calibrado: nome igual ~14, parentesco real ~8-10
 MAX_HITS = 4
-MAX_SYMS = 6              # arquivo grande: os primeiros simbolos ja dizem o tema
+MAX_SYMS = 6              # in a big file, the first symbols already give the theme
 
 # Everything written goes here, never inside the user's repository.
 HOME_DIR = Path(os.environ.get("QUALIDADE_GUARD_HOME")
@@ -147,8 +147,8 @@ def main() -> int:
             fresh_fp = nf["fp"]
             onde = "\n".join(f"  - `{r}:{l}` → `{n}`" for r, n, l, _ in iguais[:3])
             clone_blocks.append(
-                f"**`{nf['n']}`** — este corpo ({nf['t']} tokens) ja existe "
-                f"identico, com outro nome:\n{onde}")
+                f"**`{nf['n']}`** — this exact body ({nf['t']} tokens) already "
+                f"exists under another name:\n{onde}")
             warned = warned | {fresh_fp}
     except Exception:
         pass
@@ -165,7 +165,7 @@ def main() -> int:
         if not hits:
             continue
         fresh.append(name)
-        lines = [f"**`{name}`** ({sym['k']}) — ja existe algo parecido:"]
+        lines = [f"**`{name}`** ({sym['k']}) — something similar already exists:"]
         for h in hits:
             lines.append(f"  - `{h['path']}:{h['line']}` → `{h['sig']}`")
         blocks.append("\n".join(lines))
@@ -180,7 +180,7 @@ def main() -> int:
                 body = conv.read_text().strip()
                 if body:
                     parts.append(
-                        f"## Convencoes de {root.name} (aprendidas)\n\n{body}"
+                        f"## Conventions for {root.name}\n\n{body}"
                     )
             except Exception:
                 pass
@@ -188,19 +188,19 @@ def main() -> int:
 
     if clone_blocks:
         parts.append(
-            "## Reuso: corpo duplicado\n\n"
+            "## Reuse: duplicated body\n\n"
             + "\n\n".join(clone_blocks)
-            + "\n\n_Nao e nome parecido: e o mesmo codigo. Extrair para uma "
-            "funcao unica e parametrizar a diferenca._"
+            + "\n\n_This is not a similar name: it is the same code. Extract "
+            "one function and parametrise the difference._"
         )
 
     if blocks:
         parts.append(
-            "## Reuso: possivel duplicacao\n\n"
+            "## Reuse: possible duplication\n\n"
             + "\n\n".join(blocks)
-            + "\n\n_Antes de gravar: leia os candidatos acima. Se um serve, "
-            "importe/estenda em vez de reescrever. Se nenhum serve, siga — "
-            "mas diga em uma linha por que nao serviu._"
+            + "\n\n_Before writing: read the candidates above. If one fits, "
+            "import or extend it instead of rewriting. If none fits, carry on — "
+            "but say in one line why not._"
         )
 
     if parts:

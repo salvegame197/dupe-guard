@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-csearch — indice de simbolos do repositorio atual.
+csearch — symbol index for the current repository.
 
-Responde "isso ja existe aqui?" antes de escrever codigo novo. O indice e
-DERIVADO DO DISCO, sempre: nenhuma linha dele e escrita a mao. Uma nota pode
-envelhecer mentindo; um indice reconstruido a cada consulta, nao.
+Answers "does this already exist here?" before new code is written. The index
+is ALWAYS DERIVED FROM DISK; not one line of it is hand written. A note can
+age into a lie, an index rebuilt on every query cannot.
 
-Uso:
-    csearch.py <termos>              busca no repo do diretorio atual
-    csearch.py --json <termos>       saida para agente
-    csearch.py --stats               tamanho do indice
-    csearch.py --rebuild             forca reconstrucao total
-    csearch.py --repo <path>         aponta outro repo
+Usage:
+    csearch.py <terms>               search the repo of the current directory
+    csearch.py --json <terms>        machine-readable output
+    csearch.py --stats               index size
+    csearch.py --rebuild             force a full rebuild
+    csearch.py --repo <path>         point at another repo
 
-Incremental: so le arquivo cujo mtime mudou desde a ultima passada.
+Incremental: only reads files whose mtime changed since the last pass.
 """
 
 import argparse
@@ -95,7 +95,7 @@ PRIVATE_PY = re.compile(r"^_")
 
 
 def extract(path: Path, lang: str):
-    """Le um arquivo e devolve seus simbolos de topo."""
+    """Read a file and return its top-level symbols."""
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -104,7 +104,7 @@ def extract(path: Path, lang: str):
 
 
 def extract_text(text: str, lang: str):
-    """Mesma extracao, sobre texto em memoria (codigo ainda nao gravado)."""
+    """Same extraction, over in-memory text (code not yet written)."""
     out, seen = [], set()
     for i, line in enumerate(text.splitlines(), 1):
         if len(line) > 400:
@@ -152,7 +152,7 @@ LINE_COMMENT = {
 
 
 def strip_noise(line: str, lang: str) -> str:
-    """Tira string e comentario: sem isso, '{' dentro de texto quebra a conta."""
+    """Strip strings and comments: otherwise a '{' inside text breaks the count."""
     for rx in STR_PATTERNS:
         line = rx.sub('""', line)
     rx = LINE_COMMENT.get(lang)
@@ -198,11 +198,11 @@ NAO_FUNCAO = {"if", "for", "while", "switch", "catch", "do", "else", "foreach",
 
 def functions(text: str, lang: str):
     """
-    [{name, start, end, body, raw}] — corpo delimitado por chave ou indentacao.
+    [{name, start, end, body, raw}] — body delimited by braces or indentation.
 
-    `body` e a versao sem string nem comentario (para contar chave e token);
-    `raw` e o texto original, indice a indice. Mostrar `body` ao usuario
-    exibiria `readFileSync("", "")` — evidencia mutilada nao e evidencia.
+    `body` has strings and comments removed (to count braces and tokens);
+    `raw` is the original text, index for index. Showing `body` to the user
+    would print `readFileSync("", "")` — mangled evidence is not evidence.
     """
     lines = clean_lines(text, lang)
     orig = text.splitlines()
@@ -311,7 +311,7 @@ def cache_path(root: Path) -> Path:
 
 
 def walk(root: Path):
-    """Todos os arquivos de codigo do repo, sem entrar em lixo."""
+    """Every code file in the repo, skipping junk directories."""
     stack = [root]
     while stack:
         d = stack.pop()
@@ -340,7 +340,7 @@ def walk(root: Path):
 
 
 def build(root: Path, force: bool = False, budget: float = 0.0) -> dict:
-    """Reconstroi o indice, relendo apenas o que mudou."""
+    """Rebuild the index, re-reading only what changed."""
     cp = cache_path(root)
     old = {}
     if cp.exists() and not force:
@@ -392,7 +392,7 @@ def build(root: Path, force: bool = False, budget: float = 0.0) -> dict:
 
 
 def load(root: Path, max_age: int = 90, budget: float = 0.0) -> dict:
-    """Indice fresco o bastante. Abaixo de max_age, usa o cache sem revalidar."""
+    """Fresh enough. Under max_age, use the cache without revalidating."""
     cp = cache_path(root)
     if cp.exists():
         try:
@@ -417,7 +417,7 @@ CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 
 
 def tokens(s: str):
-    """createUserCart -> {create, user, cart}. O casamento util e por pedaco."""
+    """createUserCart -> {create, user, cart}. Useful matching is piecewise."""
     s = CAMEL.sub(" ", s)
     return {t for t in SPLIT.split(fold(s)) if len(t) > 2}
 
@@ -498,7 +498,7 @@ def search(data: dict, query: str, limit: int = 8, exclude: str = ""):
             if sym["k"] in ("fn", "class"):
                 score += 0.5
             if "resources/views/" in rel or "/examples/" in rel:
-                score -= 2.0    # template nao e codigo reaproveitavel
+                score -= 2.0    # a template is not reusable code
             if len(hit) >= 2:
                 score += 1.0
 
@@ -528,16 +528,16 @@ def main() -> int:
 
     if a.rebuild:
         d = build(root, force=True)
-        print(f"{root.name}: {d['nfiles']} arquivos, {d['nsyms']} simbolos")
+        print(f"{root.name}: {d['nfiles']} files, {d['nsyms']} symbols")
         return 0
 
     data = load(root)
 
     if a.stats or not a.query:
         age = int(time.time() - data.get("built", 0))
-        print(f"repo   : {data.get('root')}")
-        print(f"indice : {data.get('nfiles', 0)} arquivos, "
-              f"{data.get('nsyms', 0)} simbolos ({age}s atras)")
+        print(f"repo  : {data.get('root')}")
+        print(f"index : {data.get('nfiles', 0)} files, "
+              f"{data.get('nsyms', 0)} symbols ({age}s ago)")
         return 0
 
     hits = search(data, " ".join(a.query), a.limit, a.exclude)
@@ -547,7 +547,7 @@ def main() -> int:
         return 0
 
     if not hits:
-        print("nada parecido no indice.")
+        print("nothing similar in the index.")
         return 0
 
     for h in hits:
