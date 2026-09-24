@@ -2,8 +2,10 @@
 
 A Claude Code hook that stops duplicated code **before it is written**, not after.
 
-It runs on `PreToolUse` for `Write`, `Edit` and `MultiEdit`. Before the model
-commits code to disk, the hook indexes the repository and asks two questions:
+It runs on `PreToolUse` for `Write`, `Edit` and `MultiEdit`, and on
+`PostToolUse` for `Bash`. Before the model commits code to disk (or, for Bash,
+right after the command changed the repo), the hook indexes the repository and
+asks two questions:
 
 1. **Does a symbol with this name already exist?** (the easy half)
 2. **Does this exact body already exist under a different name?** (the half a
@@ -18,6 +20,15 @@ lets the model decide. It never blocks.
 **`handleDebitError`** — this exact body (78 tokens) already exists under another name:
   - `src/payments.js:2` → `handleCreditError`
 ```
+
+## Why Bash too
+
+Measured on one real setup over eleven days: 50 writes went through `Write` or
+`Edit`, **1,283 went through Bash** (`cat > file <<EOF`, `sed -i`,
+`python - <<PY`). A guard that only listens to `Write`/`Edit` was blind to 96%
+of the code. The Bash path cannot see the code beforehand, so it looks at
+`git status` right after the command and analyses only the added lines of code
+files changed in the last 90 seconds. Untracked files count whole.
 
 ## Why before and not after
 
@@ -107,10 +118,12 @@ DUPE_GUARD_HOME=/tmp/qg-demo python3 guard.py < examples/payload.json
 python3 -m unittest discover -s test -v
 ```
 
-Seven end-to-end cases run `guard.py` the way Claude Code does, JSON on stdin,
+Twelve end-to-end cases run `guard.py` the way Claude Code does, JSON on stdin,
 against a throwaway git repo: clone detected, silence on unrelated code, silence
 on garbage input, other tools ignored, no repeated warning in a session, silence
-outside git, old state pruned.
+outside git, old state pruned; and for the Bash path: new file caught after the
+fact, clone appended to a tracked file caught, nothing changed is silent, `cd`
+into a repo from elsewhere, stale changes ignored.
 
 ## Licence
 

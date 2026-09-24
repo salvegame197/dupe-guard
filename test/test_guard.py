@@ -90,6 +90,51 @@ class GuardTest(unittest.TestCase):
         shutil.rmtree(self.repo / ".git")
         self.assertIsNone(self.run_guard(self.payload(CLONE)))
 
+    # --- PostToolUse:Bash: the code was not knowable before the command ran
+
+    def bash_payload(self, cmd, cwd=None, sid="b1"):
+        return {"tool_name": "Bash", "hook_event_name": "PostToolUse", "session_id": sid,
+                "cwd": str(cwd or self.repo), "tool_input": {"command": cmd},
+                "tool_response": {}}
+
+    def test_bash_new_file_with_clone_is_caught_after_the_fact(self):
+        (self.repo / "src" / "debit.js").write_text(CLONE)
+        out = self.run_guard(self.bash_payload("cat > src/debit.js <<'EOF'\n...\nEOF"))
+        self.assertIsNotNone(out)
+        self.assertIn("handleDebitError", out)
+        self.assertIn("handleCreditError", out)
+        self.assertIn("You just wrote", out)
+        self.assertIn("in `src/debit.js`", out)
+
+    def test_bash_appended_clone_to_tracked_file_is_caught(self):
+        subprocess.run(["git", "add", "-A"], cwd=self.repo, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-qm", "base"], cwd=self.repo, check=True)
+        f = self.repo / "src" / "payments.js"
+        f.write_text(f.read_text() + "\n" + CLONE)
+        out = self.run_guard(self.bash_payload("sed -i '' 's/x/y/' src/payments.js"))
+        self.assertIsNotNone(out)
+        self.assertIn("handleDebitError", out)
+        # the file's own pre-existing symbols are not "duplicates" of themselves
+        self.assertNotIn("**`validateCard`**", out)
+
+    def test_bash_that_changed_nothing_is_silent(self):
+        self.assertIsNone(self.run_guard(self.bash_payload("git status && ls")))
+
+    def test_bash_cd_into_repo_from_elsewhere(self):
+        (self.repo / "src" / "debit.js").write_text(CLONE)
+        out = self.run_guard(self.bash_payload(f"cd {self.repo} && cat > src/debit.js <<'EOF'\nEOF",
+                                               cwd=self.tmp))
+        self.assertIsNotNone(out)
+        self.assertIn("handleDebitError", out)
+
+    def test_bash_ignores_stale_changes(self):
+        f = self.repo / "src" / "debit.js"
+        f.write_text(CLONE)
+        old = time.time() - 3600
+        os.utime(f, (old, old))
+        self.assertIsNone(self.run_guard(self.bash_payload("echo hi")))
+
     def test_prunes_old_session_state(self):
         state = self.home / "state"
         state.mkdir(parents=True)
