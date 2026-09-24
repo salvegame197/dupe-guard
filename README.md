@@ -76,7 +76,7 @@ Requires Python 3.9+ and git. No dependencies outside the standard library.
 Tested on 3.9, 3.11 and 3.12, macOS and Linux. The installer is a bash script.
 
 ```bash
-git clone https://github.com/<you>/dupe-guard
+git clone https://github.com/salvegame197/dupe-guard
 cd dupe-guard
 ./install.sh
 ```
