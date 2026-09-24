@@ -66,32 +66,32 @@ Requires Python 3.9+ and git. No dependencies outside the standard library.
 ```bash
 git clone https://github.com/<you>/qualidade-guard
 cd qualidade-guard
-./instalar.sh
+./install.sh
 ```
 
 The installer registers the hook in `~/.claude/settings.json`, backing the file
 up first. It refuses to run if a `qualidade-guard` entry is already registered.
 
-To uninstall: `./desinstalar.sh`
+To uninstall: `./uninstall.sh`
 
 ## Where it writes
 
-Everything goes to `~/.qualidade-guard/` (`cache/`, `estado/`, `convencoes/`).
+Everything goes to `~/.qualidade-guard/` (`cache/`, `state/`, `conventions/`).
 Override with `QUALIDADE_GUARD_HOME`. It writes nothing into your repositories.
 
 ## Per-repo conventions
 
-If `~/.qualidade-guard/convencoes/<repo-name>.md` exists, its contents are
+If `~/.qualidade-guard/conventions/<repo-name>.md` exists, its contents are
 injected once per session on the first code write. Use it for the rules a
-linter cannot express. See `convencoes/_modelo.md`.
+linter cannot express. See `conventions/_template.md`.
 
 ## Try it
 
 ```bash
-QUALIDADE_GUARD_HOME=/tmp/qg-demo python3 guard.py < exemplos/payload.json
+QUALIDADE_GUARD_HOME=/tmp/qg-demo python3 guard.py < examples/payload.json
 ```
 
-`exemplos/demo/` is a repository with a duplicate planted in it.
+`examples/demo/` is a repository with a duplicate planted in it.
 
 ## Licence
 

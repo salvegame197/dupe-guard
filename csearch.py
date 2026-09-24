@@ -192,7 +192,7 @@ DECL = {
 }
 
 # Block openers that are not functions - without this, 'if (x) {' is a function.
-NAO_FUNCAO = {"if", "for", "while", "switch", "catch", "do", "else", "foreach",
+NOT_FUNCTION = {"if", "for", "while", "switch", "catch", "do", "else", "foreach",
               "return", "match", "case", "try", "function", "fn", "def", "new"}
 
 
@@ -232,7 +232,7 @@ def functions(text: str, lang: str):
         if not m:
             continue
         name = next((g for g in m.groups() if g), None)
-        if not name or name in NAO_FUNCAO:
+        if not name or name in NOT_FUNCTION:
             continue
         # find the opening brace (it may be on the next line)
         depth, start_j, opened = 0, None, False
@@ -366,11 +366,11 @@ def build(root: Path, force: bool = False, budget: float = 0.0) -> dict:
                 files[rel] = prev
             continue
         try:
-            texto = path.read_text(encoding="utf-8", errors="ignore")
+            text = path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
-            texto = ""
-        files[rel] = {"m": mtime, "g": lang, "y": extract_text(texto, lang),
-                      "p": fingerprints(texto, lang)}
+            text = ""
+        files[rel] = {"m": mtime, "g": lang, "y": extract_text(text, lang),
+                      "p": fingerprints(text, lang)}
 
     data = {
         "v": INDEX_V,
@@ -492,7 +492,7 @@ def search(data: dict, query: str, limit: int = 8, exclude: str = ""):
                 score += 3.0            # o inverso: escrevo o geral, existe o especifico
 
             if fold(name) == fold(query.strip()):
-                score += 6.0            # mesmo nome: e o caso que importa
+                score += 6.0            # exact name: the case that matters
             if strong & ptok:
                 score += 1.0            # caminho tambem fala do assunto
             if sym["k"] in ("fn", "class"):
