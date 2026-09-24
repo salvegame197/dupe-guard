@@ -23,7 +23,7 @@ rules = data.setdefault("hooks", {}).setdefault("PreToolUse", [])
 for r in rules:
     for h in r.get("hooks", []):
         cmd = h.get("command", "")
-        if "guard.py" in cmd or "qualidade-guard" in cmd:
+        if "guard.py" in cmd or "dupe-guard" in cmd:
             print(f"a guard is already registered:\n  {cmd}\n")
             print("nothing was changed. remove the old entry first, or run")
             print("./uninstall.sh if it came from this same folder.")

@@ -29,8 +29,8 @@ MAX_HITS = 4
 MAX_SYMS = 6              # in a big file, the first symbols already give the theme
 
 # Everything written goes here, never inside the user's repository.
-HOME_DIR = Path(os.environ.get("QUALIDADE_GUARD_HOME")
-                or (Path.home() / ".qualidade-guard"))
+HOME_DIR = Path(os.environ.get("DUPE_GUARD_HOME")
+                or (Path.home() / ".dupe-guard"))
 STATE_DIR = HOME_DIR / "state"
 CONV_DIR = HOME_DIR / "conventions"
 

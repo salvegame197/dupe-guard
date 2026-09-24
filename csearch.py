@@ -27,8 +27,8 @@ import time
 import unicodedata
 from pathlib import Path
 
-CACHE_DIR = Path(os.environ.get("QUALIDADE_GUARD_HOME")
-                 or (Path.home() / ".qualidade-guard")) / "cache"
+CACHE_DIR = Path(os.environ.get("DUPE_GUARD_HOME")
+                 or (Path.home() / ".dupe-guard")) / "cache"
 
 # Bump when the index format changes: a stale cache is discarded rather than
 # misread. An index that lies silently is worse than no index.

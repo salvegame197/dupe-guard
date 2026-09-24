@@ -1,4 +1,4 @@
-# qualidade-guard
+# dupe-guard
 
 A Claude Code hook that stops duplicated code **before it is written**, not after.
 
@@ -48,7 +48,7 @@ right to speak:
 Name matching is the easy half. `handleCreditError` and `handleDebitError` are
 the same body, and no name query relates them.
 
-`qualidade-guard` fingerprints function bodies: it tokenizes, drops identifiers
+`dupe-guard` fingerprints function bodies: it tokenizes, drops identifiers
 and literals, keeps structure (control flow, operators, punctuation), and
 hashes the result. Bodies under 60 structural tokens are skipped — shallow
 getters and CRUD wrappers collide by coincidence, and a false positive costs
@@ -64,31 +64,31 @@ Python, Rust, Go.
 Requires Python 3.9+ and git. No dependencies outside the standard library.
 
 ```bash
-git clone https://github.com/<you>/qualidade-guard
-cd qualidade-guard
+git clone https://github.com/<you>/dupe-guard
+cd dupe-guard
 ./install.sh
 ```
 
 The installer registers the hook in `~/.claude/settings.json`, backing the file
-up first. It refuses to run if a `qualidade-guard` entry is already registered.
+up first. It refuses to run if a `dupe-guard` entry is already registered.
 
 To uninstall: `./uninstall.sh`
 
 ## Where it writes
 
-Everything goes to `~/.qualidade-guard/` (`cache/`, `state/`, `conventions/`).
-Override with `QUALIDADE_GUARD_HOME`. It writes nothing into your repositories.
+Everything goes to `~/.dupe-guard/` (`cache/`, `state/`, `conventions/`).
+Override with `DUPE_GUARD_HOME`. It writes nothing into your repositories.
 
 ## Per-repo conventions
 
-If `~/.qualidade-guard/conventions/<repo-name>.md` exists, its contents are
+If `~/.dupe-guard/conventions/<repo-name>.md` exists, its contents are
 injected once per session on the first code write. Use it for the rules a
 linter cannot express. See `conventions/_template.md`.
 
 ## Try it
 
 ```bash
-QUALIDADE_GUARD_HOME=/tmp/qg-demo python3 guard.py < examples/payload.json
+DUPE_GUARD_HOME=/tmp/qg-demo python3 guard.py < examples/payload.json
 ```
 
 `examples/demo/` is a repository with a duplicate planted in it.
