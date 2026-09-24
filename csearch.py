@@ -295,7 +295,7 @@ def repo_root(start: Path) -> Path:
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
-            cwd=str(start), capture_output=True, text=True, timeout=5,
+            cwd=str(start), capture_output=True, text=True, timeout=2,
         )
         if r.returncode == 0 and r.stdout.strip():
             return Path(r.stdout.strip())

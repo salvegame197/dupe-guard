@@ -55,12 +55,31 @@ def load_state(sid: str) -> dict:
         return {"warned": [], "conv": False}
 
 
+STATE_TTL_DAYS = 7
+
+
 def save_state(sid: str, st: dict):
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        state_file(sid).write_text(json.dumps(st))
+        # Atomic: parallel edits in one session must not leave a torn file.
+        target = state_file(sid)
+        tmp = target.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(st))
+        os.replace(tmp, target)
+        prune_state()
     except Exception:
         pass
+
+
+def prune_state():
+    """Drop state of sessions older than STATE_TTL_DAYS; it never expires otherwise."""
+    cutoff = time.time() - STATE_TTL_DAYS * 86400
+    for f in STATE_DIR.glob("*.json"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def new_code(tool: str, ti: dict) -> str:
@@ -124,6 +143,10 @@ def main() -> int:
     cwd = payload.get("cwd") or os.getcwd()
     root = csearch.repo_root(Path(fpath).parent if Path(fpath).parent.exists()
                              else Path(cwd))
+    # Outside a git repo the fallback root is the file's own folder, and for
+    # ~/Documents/x.py that means indexing all of ~/Documents. Not worth it.
+    if not (root / ".git").exists():
+        return 0
     data = csearch.load(root, max_age=90, budget=BUDGET - (time.time() - T0))
 
     try:
