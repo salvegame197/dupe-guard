@@ -1,0 +1,9 @@
+{
+  "tool_name": "Write",
+  "session_id": "teste-copia-publica",
+  "cwd": "exemplos/demo",
+  "tool_input": {
+    "file_path": "exemplos/demo/src/debito.js",
+    "content": "function handleDebitError(erro, pedido) {\n    const codigo = erro && erro.code ? erro.code : 'DESCONHECIDO'\n    logger.warn('falha no pagamento', { codigo, pedido: pedido.id })\n    if (codigo === 'SALDO_INSUFICIENTE') {\n        return { ok: false, motivo: 'saldo', tentarNovamente: false }\n    }\n    if (codigo === 'TIMEOUT') {\n        return { ok: false, motivo: 'rede', tentarNovamente: true }\n    }\n    return { ok: false, motivo: 'desconhecido', tentarNovamente: true }\n}\n"
+  }
+}
