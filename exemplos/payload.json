@@ -3,7 +3,7 @@
   "session_id": "teste-copia-publica",
   "cwd": "exemplos/demo",
   "tool_input": {
-    "file_path": "exemplos/demo/src/debito.js",
-    "content": "function handleDebitError(erro, pedido) {\n    const codigo = erro && erro.code ? erro.code : 'DESCONHECIDO'\n    logger.warn('falha no pagamento', { codigo, pedido: pedido.id })\n    if (codigo === 'SALDO_INSUFICIENTE') {\n        return { ok: false, motivo: 'saldo', tentarNovamente: false }\n    }\n    if (codigo === 'TIMEOUT') {\n        return { ok: false, motivo: 'rede', tentarNovamente: true }\n    }\n    return { ok: false, motivo: 'desconhecido', tentarNovamente: true }\n}\n"
+    "file_path": "exemplos/demo/src/debit.js",
+    "content": "function handleDebitError(error, order) {\n    const code = error && error.code ? error.code : 'UNKNOWN'\n    logger.warn('payment failed', { code, order: order.id })\n    if (code === 'INSUFFICIENT_FUNDS') {\n        return { ok: false, reason: 'funds', retry: false }\n    }\n    if (code === 'TIMEOUT') {\n        return { ok: false, reason: 'network', retry: true }\n    }\n    return { ok: false, reason: 'unknown', retry: true }\n}\n"
   }
 }

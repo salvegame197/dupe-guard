@@ -13,10 +13,10 @@ If the answer is yes, it injects the locations into the model's context and
 lets the model decide. It never blocks.
 
 ```
-## Reuso: corpo duplicado
+## Reuse: duplicated body
 
-**`handleDebitError`** — este corpo (78 tokens) ja existe identico, com outro nome:
-  - `src/pagamentos.js:2` → `handleCreditError`
+**`handleDebitError`** — this exact body (78 tokens) already exists under another name:
+  - `src/payments.js:2` → `handleCreditError`
 ```
 
 ## Why before and not after
