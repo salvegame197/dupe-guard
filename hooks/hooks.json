@@ -1,0 +1,21 @@
+{
+  "description": "Reuse guard: before Write/Edit, and after any Bash command that changed code in a git repo.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/guard.py\"", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/guard.py\"", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}

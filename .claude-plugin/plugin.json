@@ -1,0 +1,13 @@
+{
+  "name": "dupe-guard",
+  "version": "0.2.0",
+  "description": "Stops duplicated code before it is written: a hook that finds same-name symbols and identical bodies under other names, plus review and conventions skills.",
+  "author": {
+    "name": "Gabriel Demamann",
+    "url": "https://github.com/salvegame197"
+  },
+  "homepage": "https://github.com/salvegame197/dupe-guard",
+  "repository": "https://github.com/salvegame197/dupe-guard",
+  "license": "MIT",
+  "keywords": ["duplication", "code-review", "hooks", "clone-detection", "conventions"]
+}

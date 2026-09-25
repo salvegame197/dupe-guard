@@ -104,5 +104,27 @@ class ScriptsTest(unittest.TestCase):
         self.assertFalse((self.home / "conventions").exists())
 
 
+class ManifestTest(unittest.TestCase):
+    def test_manifests_are_valid_and_agree(self):
+        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+        market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
+        entry = next(p for p in market["plugins"] if p["name"] == plugin["name"])
+        self.assertEqual(entry["version"], plugin["version"])
+
+    def test_hooks_point_at_files_that_exist(self):
+        hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())["hooks"]
+        for event, rules in hooks.items():
+            for rule in rules:
+                for h in rule["hooks"]:
+                    path = h["command"].split('"')[1].replace("${CLAUDE_PLUGIN_ROOT}", str(ROOT))
+                    self.assertTrue(Path(path).exists(), f"{event}: {path}")
+
+    def test_skills_reference_scripts_that_exist(self):
+        import re
+        for skill in (ROOT / "skills").glob("*/SKILL.md"):
+            for ref in re.findall(r"\$\{CLAUDE_PLUGIN_ROOT\}/([\w./-]+)", skill.read_text()):
+                self.assertTrue((ROOT / ref).exists(), f"{skill.parent.name}: {ref}")
+
+
 if __name__ == "__main__":
     unittest.main()

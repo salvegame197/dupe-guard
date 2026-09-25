@@ -70,10 +70,32 @@ more trust than a missed clone.
 TypeScript / JavaScript (`.ts .tsx .js .jsx .mjs .cjs .vue .svelte`), PHP,
 Python, Rust, Go.
 
+## What's in the plugin
+
+| Part | What it does |
+|---|---|
+| **Hook** | Warns before `Write`/`Edit`, and after any `Bash` command that changed code, when the new code already exists: same name, or identical body under another name. Never blocks. |
+| **`/dupe-guard:review`** | A code review skill: duplication, complexity, missing guard clauses, N+1 queries, sequential `await`, swallowed errors, interpolated SQL, circular imports, layer violations, dead code. The scripts point at addresses; the skill tells the model how to judge them. |
+| **`/dupe-guard:conventions`** | Reads the repo and proposes its conventions (error handling, API responses, validation, dates, HTTP client, logging) with counts as proof. Writes nothing without your approval. Accepted rules are injected by the hook on the first code write of each session. |
+
 ## Install
 
 Requires Python 3.9+ and git. No dependencies outside the standard library.
-Tested on 3.9, 3.11 and 3.12, macOS and Linux. The installer is a bash script.
+Tested on 3.9, 3.11 and 3.12, macOS and Linux.
+
+As a Claude Code plugin (hook and skills):
+
+```
+/plugin marketplace add salvegame197/dupe-guard
+/plugin install dupe-guard@dupe-guard
+```
+
+Restart Claude Code afterwards. Uninstall with `/plugin uninstall dupe-guard`.
+
+The hook calls `python3` from `PATH`. Since everything is standard library, any
+Python 3.9+ works, including the one macOS ships with the developer tools.
+
+### Hook only, without the plugin system
 
 ```bash
 git clone https://github.com/salvegame197/dupe-guard
@@ -82,11 +104,11 @@ cd dupe-guard
 ```
 
 The installer registers the hook in `~/.claude/settings.json`, backing the file
-up first. It records the absolute path of the Python that ran it, because Claude
-Code may launch hooks with a reduced `PATH` where a bare `python3` resolves to a
-system stub. It refuses to run if a guard is already registered.
+up first, and records the absolute path of the Python that ran it. It refuses to
+run if a guard is already registered. Uninstall with `./uninstall.sh`.
 
-To uninstall: `./uninstall.sh`
+**Pick one.** The plugin and the installer both register the hook; with both,
+it runs twice on every edit.
 
 ## Where it writes
 
@@ -102,7 +124,8 @@ all of `~/Documents`.
 
 If `~/.dupe-guard/conventions/<repo-name>.md` exists, its contents are
 injected once per session on the first code write. Use it for the rules a
-linter cannot express. See `conventions/_template.md`.
+linter cannot express. Start one with `/dupe-guard:conventions`, or by hand
+from `conventions/_template.md`.
 
 ## Try it
 
@@ -118,12 +141,16 @@ DUPE_GUARD_HOME=/tmp/qg-demo python3 guard.py < examples/payload.json
 python3 -m unittest discover -s test -v
 ```
 
-Twelve end-to-end cases run `guard.py` the way Claude Code does, JSON on stdin,
+The hook has thirteen end-to-end cases run `guard.py` the way Claude Code does, JSON on stdin,
 against a throwaway git repo: clone detected, silence on unrelated code, silence
 on garbage input, other tools ignored, no repeated warning in a session, silence
-outside git, old state pruned; and for the Bash path: new file caught after the
-fact, clone appended to a tracked file caught, nothing changed is silent, `cd`
-into a repo from elsewhere, stale changes ignored.
+outside git, old state pruned, test files skipped; and for the Bash path: new
+file caught after the fact, clone appended to a tracked file caught, nothing
+changed is silent, `cd` into a repo from elsewhere, stale changes ignored.
+
+The skill scripts and manifests have nine more: `difflook` on the working diff
+and on a branch, `smell` finding an N+1, `propose` drafting without writing, and
+the manifests, hook paths and skill references all resolving to real files.
 
 ## Licence
 

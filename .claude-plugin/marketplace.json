@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dupe-guard",
+  "description": "dupe-guard: a Claude Code plugin that stops duplicated code before it is written.",
+  "owner": {
+    "name": "Gabriel Demamann",
+    "url": "https://github.com/salvegame197"
+  },
+  "plugins": [
+    {
+      "name": "dupe-guard",
+      "source": "./",
+      "description": "Stops duplicated code before it is written: a hook that finds same-name symbols and identical bodies under other names, plus review and conventions skills.",
+      "version": "0.2.0",
+      "license": "MIT",
+      "homepage": "https://github.com/salvegame197/dupe-guard",
+      "repository": "https://github.com/salvegame197/dupe-guard"
+    }
+  ]
+}
