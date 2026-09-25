@@ -51,6 +51,8 @@ def load_config() -> dict:
         cfg["enabled"] = True
     if os.environ.get("DUPE_GUARD_VAULT"):
         cfg["vault"] = os.environ["DUPE_GUARD_VAULT"]
+    if os.environ.get("DUPE_GUARD_TRANSCRIPTS"):
+        cfg["transcripts"] = os.environ["DUPE_GUARD_TRANSCRIPTS"]
     cfg["vault"] = Path(os.path.expanduser(cfg["vault"]))
     cfg["transcripts"] = Path(os.path.expanduser(cfg["transcripts"]))
     langs = [l for l in (cfg.get("languages") or ["en"]) if l in LABELS]
@@ -78,7 +80,9 @@ def injected_context(attachment: dict) -> str:
     """
     if attachment.get("type") == "hook_additional_context":
         c = attachment.get("content")
-        return "\n".join(c) if isinstance(c, list) else (c or "")
+        if isinstance(c, list):
+            return "\n".join(x for x in c if isinstance(x, str))
+        return c if isinstance(c, str) else ""
     if attachment.get("type") == "hook_success":
         try:
             return json.loads(attachment.get("stdout") or "")["hookSpecificOutput"]["additionalContext"]

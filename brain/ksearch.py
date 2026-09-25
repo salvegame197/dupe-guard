@@ -246,6 +246,9 @@ def build_assoc(min_df: int = 8, max_ratio: float = 0.10,
     return len(out)
 
 
+MIN_DOCS_FOR_STOPWORDS = 50
+
+
 def build_stopwords(threshold: float = 0.25) -> int:
     """
     Derive from the corpus the words that discriminate nothing.
@@ -254,6 +257,10 @@ def build_stopwords(threshold: float = 0.25) -> int:
     nobody guesses they need blocking. The corpus answers on its own: a word
     present in more than 25% of documents separates nothing, which is the
     principle of IDF. Written once at indexing time; consumers just load it.
+
+    Only from a real corpus, though. With a handful of documents every word
+    is in more than 25% of them, so a fresh vault turned every word into a
+    stopword and recall went silent without a single error.
     """
     df = Counter()
     docs = 0
@@ -268,7 +275,8 @@ def build_stopwords(threshold: float = 0.25) -> int:
             for turn in doc["turns"]:
                 words.update(re.findall(r"[a-z][a-z]{2,}", fold(turn["t"])))
             df.update(words)
-    if not docs:
+    if docs < MIN_DOCS_FOR_STOPWORDS:
+        STOPWORDS.write_text("[]", encoding="utf-8")
         return 0
     cutoff = docs * threshold
     common = sorted(w for w, c in df.items() if c >= cutoff)

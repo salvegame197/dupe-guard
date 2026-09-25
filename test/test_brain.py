@@ -97,7 +97,11 @@ class Brain(unittest.TestCase):
         self.fake.mkdir()
         (self.fake / "claude").write_text(FAKE_CLAUDE)
         (self.fake / "claude").chmod(0o755)
+        # Never the developer's real transcripts: an index built from them made
+        # these tests pass locally and fail on CI, where there are none.
+        (self.tmp / "transcripts").mkdir()
         self.env = {**os.environ, "DUPE_GUARD_HOME": str(self.home), "DUPE_GUARD_VAULT": str(self.vault),
+                    "DUPE_GUARD_TRANSCRIPTS": str(self.tmp / "transcripts"),
                     "DUPE_GUARD_BRAIN": "1", "DUPE_GUARD_CLAUDE": str(self.fake / "claude"),
                     "FAKE_DIR": str(self.fake)}
 
@@ -190,6 +194,20 @@ class Brain(unittest.TestCase):
         self.assertIsNotNone(ctx)
         self.assertIn("Exponential backoff", ctx)
         self.assertEqual(self.run_py("recall.py", {"prompt": "ok go ahead", "session_id": "r1"}), "")
+
+    def test_a_small_fresh_vault_derives_no_stopwords(self):
+        # Regression: with a handful of documents every word was in >25% of
+        # them, became a stopword, and recall never spoke on a new vault.
+        self.reindex()
+        stop = json.loads((self.home / "brain" / "ksearch-stopwords.json").read_text())
+        self.assertEqual(stop, [])
+
+    def test_a_null_injection_does_not_break_the_readers(self):
+        tp = self.tmp / "n.jsonl"
+        tp.write_text(line(type="attachment", attachment={"type": "hook_additional_context",
+                                                          "hookName": "UserPromptSubmit", "content": [None]}))
+        self.run_py("proposals.py", args=["--generate", str(tp), "n"])
+        self.run_py("hit_rate.py", args=[str(tp)])
 
     def test_recall_does_not_repeat_itself_in_a_session(self):
         self.reindex()
