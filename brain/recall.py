@@ -217,6 +217,25 @@ def pick(results, terms, seen, session_id):
     return picked
 
 
+def recall(prompt: str, session_id: str, cfg: dict):
+    """(terms, matched, picked) for a prompt — the whole decision, with no
+    side effects. The hook and the evaluation script both go through here, so
+    what is measured is exactly what runs."""
+    from brain import ksearch
+    if len(prompt.strip()) < MIN_PROMPT_CHARS or not ksearch.INDEX.exists():
+        return [], 0, []
+    terms = terms_from(prompt, cfg["languages"])
+    # One term alone is usually too generic, unless it is long and specific.
+    if len(terms) < 2 and not (terms and len(terms[0]) >= MIN_SOLO_TERM):
+        return terms, 0, []
+    found, _ = ksearch.search(terms, limit=8)
+    results = [{"score": round(s, 1), "source": d["src"], "title": d["title"],
+                "project": d["project"], "date": d["date"], "id": d["id"],
+                "snippets": [ksearch.snippet(t["t"], terms) for t in b]}
+               for s, d, b in found[:8]]
+    return terms, len(found), pick(results, terms, already_seen(session_id), session_id)
+
+
 def main() -> int:
     try:
         payload = json.load(sys.stdin)
@@ -225,31 +244,15 @@ def main() -> int:
     cfg = load_config()
     if not cfg["enabled"]:
         return 0
-
-    from brain import ksearch
     prompt = payload.get("prompt") or ""
     session_id = payload.get("session_id") or ""
-    if len(prompt.strip()) < MIN_PROMPT_CHARS or not ksearch.INDEX.exists():
-        return 0
-
-    terms = terms_from(prompt, cfg["languages"])
-    # One term alone is usually too generic, unless it is long and specific.
-    if len(terms) < 2 and not (terms and len(terms[0]) >= MIN_SOLO_TERM):
-        return 0
-
-    found, _ = ksearch.search(terms, limit=8)
-    results = [{"score": round(s, 1), "source": d["src"], "title": d["title"],
-                "project": d["project"], "date": d["date"], "id": d["id"],
-                "snippets": [ksearch.snippet(t["t"], terms) for t in b]}
-               for s, d, b in found[:8]]
-    seen = already_seen(session_id)
-    picked = pick(results, terms, seen, session_id)
+    terms, matched, picked = recall(prompt, session_id, cfg)
     if not picked:
         return 0
 
     L = labels(cfg)
     lines = [f"## {L['recall_header']}", "",
-             f"{L['recall_search']}: {', '.join(terms)} — {len(found)} {L['recall_found']}", ""]
+             f"{L['recall_search']}: {', '.join(terms)} — {matched} {L['recall_found']}", ""]
     for r in picked:
         origin = "vault" if r["source"] == "vault" else (r.get("project") or "?")
         when = f", {r['date']}" if r.get("date") else ""
@@ -259,7 +262,7 @@ def main() -> int:
         lines.append("")
     lines.append(L["recall_footer"] + f" `python3 {Path(__file__).parent / 'ksearch.py'} <terms>`")
 
-    remember(session_id, seen | {r["id"] for r in picked})
+    remember(session_id, already_seen(session_id) | {r["id"] for r in picked})
     print(hook_output("UserPromptSubmit", "\n".join(lines)))
     return 0
 

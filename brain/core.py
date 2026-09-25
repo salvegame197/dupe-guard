@@ -27,6 +27,8 @@ DEFAULTS = {
     "note_language": "English",
     "raw_dir": "Sessions/Raw",
     "proposals_page": "Harness Proposals.md",
+    # a markdown table of questions with known answers; see brain/truth.py
+    "truth_page": "Known Truths.md",
     # folded cwd basename -> note name, for repos whose folder name is not the
     # name of their note
     "project_aliases": {},

@@ -215,6 +215,20 @@ class Brain(unittest.TestCase):
         self.assertIsNotNone(self.context(self.run_py("recall.py", p)))
         self.assertIsNone(self.context(self.run_py("recall.py", p)))
 
+    # ------------------------------------------------------------------- truth
+
+    def test_truth_scores_hit_miss_and_silent_apart(self):
+        self.reindex()
+        (self.vault / "Known Truths.md").write_text(
+            "| # | question | expected page | answer | ok? |\n|---|---|---|---|---|\n"
+            "| 1 | how should exponential backoff work for invoice retries | Exponential backoff | doubles | |\n"
+            "| 2 | how should exponential backoff work for invoice retries | Some other page / Nothing here | x | |\n"
+            "| 3 | ok go ahead | Exponential backoff | - | |\n")
+        out = self.run_py("truth.py")
+        self.assertIn("hit 1  miss 1  silent 1  of 3", out)
+        out = self.run_py("truth.py", args=["--save"])
+        self.assertTrue(list((self.home / "brain" / "truth").glob("*.json")))
+
     # --------------------------------------------------------------- proposals
 
     def test_unread_recall_becomes_a_stopword_proposal_and_apply_silences_it(self):
