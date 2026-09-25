@@ -17,7 +17,9 @@ DATA = HOME_DIR / "brain"
 
 DEFAULTS = {
     "enabled": False,
-    "vault": str(HOME_DIR / "vault"),
+    # Outside HOME_DIR on purpose: that folder is index, cache and state,
+    # safe to delete; the vault is the user's notes.
+    "vault": str(Path.home() / "second-brain"),
     "transcripts": str(Path.home() / ".claude" / "projects"),
     # First language drives the labels written to the vault; all of them feed
     # the recall stopword lists and the correction phrases proposals look for.

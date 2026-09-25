@@ -195,8 +195,9 @@ def record(props, info, sid, cfg, when=None):
         page.write_text(
             f"---\ntags: [harness, proposals]\n---\n\n# {page.stem}\n\n"
             "The harness proposes changes to itself from objective evidence in each\n"
-            "session. **Nothing applies itself.** Mark `[x]` to approve and run\n"
-            f"`python3 {Path(__file__).resolve()} --apply`; mark `[-]` to reject.\n"
+            "session. **Nothing applies itself.** Decide in chat, or mark `[x]` to\n"
+            "approve and `[-]` to reject; then ask Claude to apply them (the dupe-guard\n"
+            "memory skill runs `brain/proposals.py --apply`).\n"
             "Kinds: `stopword` (recall stops searching for that word), `convention`\n"
             "(a rule for the repo, injected by the guard).\n\n",
             encoding="utf-8")

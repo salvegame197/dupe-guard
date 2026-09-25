@@ -176,7 +176,7 @@ class Brain(unittest.TestCase):
 
     def test_default_vault_inside_a_hidden_folder_is_indexed(self):
         # Regression: the indexer skipped any path with a dot-folder ANYWHERE in
-        # it, so a vault under ~/.dupe-guard (the default) was never indexed.
+        # it, so a vault under, say, ~/.config or ~/.dupe-guard was never indexed.
         env = {**self.env, "DUPE_GUARD_VAULT": str(self.home / "vault")}
         shutil.copytree(self.vault, self.home / "vault")
         self.run_py("ksearch.py", env=env, args=["--reindex"])
