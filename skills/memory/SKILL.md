@@ -24,12 +24,13 @@ Nothing runs until it is enabled.
 Ask the user two things, then write the config:
 
 1. **Where is the vault?** An existing Obsidian vault, or a new folder. The
-   default is `~/.dupe-guard/vault`.
+   default is `~/second-brain`.
 2. **Which language do they work in?** `en` and `pt` are supported. The first
    one sets the labels written to the vault; all of them tune recall.
 
 Write `~/.dupe-guard/config.json` (merge if it exists; `DUPE_GUARD_HOME` moves
-it):
+it). Never put the vault inside `~/.dupe-guard`: that folder holds only index,
+cache and state, and is safe to delete.
 
 ```json
 {
