@@ -50,6 +50,7 @@ EXTS = {
 
 SKIP_FILE = re.compile(
     r"(\.min\.|\.d\.ts$|\.test\.|\.spec\.|\.stories\.|-lock\.|\.config\.)"
+    r"|^test_.*\.py$|_test\.(?:py|go)$"
 )
 
 MAX_BYTES = 400_000

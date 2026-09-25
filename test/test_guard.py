@@ -86,6 +86,17 @@ class GuardTest(unittest.TestCase):
         self.assertIsNone(self.run_guard(None, raw="this is not json"))
         self.assertIsNone(self.run_guard(None, raw=""))
 
+    def test_skips_test_files_by_naming_convention(self):
+        sys.path.insert(0, str(ROOT))
+        import csearch
+        for name in ("test_payments.py", "payments_test.py", "payments_test.go",
+                     "payments.test.js", "payments.spec.ts"):
+            self.assertTrue(csearch.SKIP_FILE.search(name), name)
+        for name in ("payments.py", "testing.py", "contest.go", "payments.js"):
+            self.assertFalse(csearch.SKIP_FILE.search(name), name)
+        # and end to end: a clone written into a test file stays silent
+        self.assertIsNone(self.run_guard(self.payload(CLONE, path="src/payments.test.js")))
+
     def test_ignores_other_tools(self):
         self.assertIsNone(self.run_guard(self.payload(CLONE, tool="Read")))
 
