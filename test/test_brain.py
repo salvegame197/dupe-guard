@@ -215,6 +215,19 @@ class Brain(unittest.TestCase):
         self.assertIsNotNone(self.context(self.run_py("recall.py", p)))
         self.assertIsNone(self.context(self.run_py("recall.py", p)))
 
+    def test_title_hit_handles_hyphens_acronyms_and_aliases(self):
+        sys.path.insert(0, str(ROOT))
+        from brain.recall import title_hit
+        # regressions measured on the truth page: 8 of 30 questions failed here
+        self.assertTrue(title_hit(["shop-admin"], "shop-admin"))
+        self.assertTrue(title_hit(["api-producer"], "API-Producer-NODE"))
+        self.assertTrue(title_hit(["eua"], "Sending a device to the EUA"))
+        self.assertTrue(title_hit(["gate_control"], "Gate Control", {"gate_control": {"access", "control"}}))
+        # what must still NOT match
+        self.assertFalse(title_hit(["begin"], "Kit for beginners"))      # 'begin' in 'beginners' is a letter collision
+        self.assertFalse(title_hit(["eua"], "Europe and beyond"))
+        self.assertFalse(title_hit(["api-producer"], "API of the consumer"))
+
     # ------------------------------------------------------------------- truth
 
     def test_truth_scores_hit_miss_and_silent_apart(self):

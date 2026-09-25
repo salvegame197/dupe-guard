@@ -150,25 +150,52 @@ def terms_from(prompt: str, languages):
     return out[:MAX_TERMS]
 
 
-def title_hit(terms, title: str):
+def title_words(title: str) -> set:
+    return set(re.findall(r"[a-z0-9]{3,}", fold(title)))
+
+
+def title_hit(terms, title: str, aliases=None):
     """
     A term matching the title — by WORD, never by substring.
 
     'start' inside 'starter' is not a shared subject, it is a letter
     collision. The title is split into words and a term must match one whole,
     tolerating only a short plural inflection (up to 2 characters).
+
+    Three cases the first version missed, each measured against questions
+    with known answers:
+      - a term with a hyphen or underscore ('shop-admin', 'gate_control')
+        never matched, because the title splits into words and the term did
+        not: every part of the term must now be a word of the title;
+      - an acronym ('eua', 'wal', 'pos') was below the minimum length; an
+        EXACT word match is now accepted for any term of 3+ letters, and only
+        the inflection tolerance keeps the minimum;
+      - a repo folder that is not the note's name ('gate_control' vs
+        'Controle de Acesso') is bridged by the project aliases from config.
     """
-    words = set(re.findall(r"[a-z0-9]{3,}", fold(title)))
+    words = title_words(title)
+    aliases = aliases or {}
     for t in terms:
-        if len(t) < MIN_TITLE_TERM:
-            continue
+        parts = [x for x in re.split(r"[-_]", t) if len(x) >= 3]
+        if len(parts) > 1 and all(x in words for x in parts):
+            return t
+        alias_words = aliases.get(t)
+        if alias_words and alias_words <= words:
+            return t
         for w in words:
             if w == t:
                 return t
+            if len(t) < MIN_TITLE_TERM:
+                continue
             short, long_ = (t, w) if len(t) <= len(w) else (w, t)
             if len(long_) - len(short) <= 2 and long_.startswith(short):
                 return t
     return None
+
+
+def alias_words(cfg) -> dict:
+    """folded alias key -> words of the note it points at."""
+    return {fold(k): title_words(v) for k, v in (cfg.get("project_aliases") or {}).items()}
 
 
 def state_file(session_id: str) -> Path:
@@ -194,7 +221,7 @@ def remember(session_id: str, ids: set) -> None:
         pass
 
 
-def pick(results, terms, seen, session_id):
+def pick(results, terms, seen, session_id, aliases=None):
     picked = []
     for r in results:
         if r["score"] < MIN_SCORE_TITLE:
@@ -209,7 +236,7 @@ def pick(results, terms, seen, session_id):
         # one that works: a noise word and a useful term can have the same
         # corpus frequency, so no IDF threshold separates them, while the title
         # is the subject already distilled.
-        if not title_hit(terms, r["title"] or ""):
+        if not title_hit(terms, r["title"] or "", aliases):
             continue
         picked.append(r)
         if len(picked) >= MAX_RESULTS:
@@ -233,7 +260,7 @@ def recall(prompt: str, session_id: str, cfg: dict):
                 "project": d["project"], "date": d["date"], "id": d["id"],
                 "snippets": [ksearch.snippet(t["t"], terms) for t in b]}
                for s, d, b in found[:8]]
-    return terms, len(found), pick(results, terms, already_seen(session_id), session_id)
+    return terms, len(found), pick(results, terms, already_seen(session_id), session_id, alias_words(cfg))
 
 
 def main() -> int:
