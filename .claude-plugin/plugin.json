@@ -1,7 +1,7 @@
 {
   "name": "dupe-guard",
-  "version": "0.2.0",
-  "description": "Stops duplicated code before it is written: a hook that finds same-name symbols and identical bodies under other names, plus review and conventions skills.",
+  "version": "0.3.0",
+  "description": "Stops duplicated code before it is written, and gives Claude Code a second brain: sessions recorded to a markdown vault, recalled when relevant, distilled into project notes.",
   "author": {
     "name": "Gabriel Demamann",
     "url": "https://github.com/salvegame197"
@@ -9,5 +9,14 @@
   "homepage": "https://github.com/salvegame197/dupe-guard",
   "repository": "https://github.com/salvegame197/dupe-guard",
   "license": "MIT",
-  "keywords": ["duplication", "code-review", "hooks", "clone-detection", "conventions"]
+  "keywords": [
+    "duplication",
+    "code-review",
+    "hooks",
+    "clone-detection",
+    "conventions",
+    "memory",
+    "second-brain",
+    "obsidian"
+  ]
 }
