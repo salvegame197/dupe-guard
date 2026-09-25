@@ -88,24 +88,33 @@ Python, Rust, Go.
 | **Second brain hooks** | Session index, recall, reindex, session log, proposals. Off until enabled. |
 | **`/dupe-guard:memory`** | Sets the second brain up, and tells the model how to use the vault, distill sessions and handle proposals. |
 
-## Install
+## Install, update, uninstall
 
 Requires Python 3.9+ and git. No dependencies outside the standard library.
-Tested on 3.9, 3.11 and 3.12, macOS and Linux.
+Tested on 3.9, 3.11 and 3.12, macOS and Linux. Either path installs the same
+thing, the guard and the second brain (which stays off until you enable it).
+**Pick one**: with both, every hook runs twice.
 
-As a Claude Code plugin (hook and skills):
+### As a Claude Code plugin
 
 ```
 /plugin marketplace add salvegame197/dupe-guard
 /plugin install dupe-guard@dupe-guard
 ```
 
-Restart Claude Code afterwards. Uninstall with `/plugin uninstall dupe-guard`.
+Update, then restart Claude Code:
 
-The hook calls `python3` from `PATH`. Since everything is standard library, any
+```
+/plugin marketplace update dupe-guard
+/plugin update dupe-guard@dupe-guard
+```
+
+Uninstall: `/plugin uninstall dupe-guard`.
+
+The hooks call `python3` from `PATH`. Everything is standard library, so any
 Python 3.9+ works, including the one macOS ships with the developer tools.
 
-### Hook only, without the plugin system
+### Without the plugin system
 
 ```bash
 git clone https://github.com/salvegame197/dupe-guard
@@ -113,12 +122,41 @@ cd dupe-guard
 ./install.sh
 ```
 
-The installer registers the hook in `~/.claude/settings.json`, backing the file
-up first, and records the absolute path of the Python that ran it. It refuses to
-run if a guard is already registered. Uninstall with `./uninstall.sh`.
+`install.sh` registers every hook `hooks/hooks.json` declares in
+`~/.claude/settings.json`, pointing at this folder and at the absolute path of
+the Python that ran it. It backs the file up first and touches no other entry.
 
-**Pick one.** The plugin and the installer both register the hook; with both,
-it runs twice on every edit.
+It is a sync, not a one-shot: to update, `git pull && ./install.sh`. Hooks
+that were added, changed or removed upstream are applied; nothing duplicates.
+It refuses to run while another guard or the dupe-guard plugin is active.
+
+`./uninstall.sh` removes every entry pointing at this folder and nothing else.
+
+### What uninstalling leaves behind
+
+Neither path deletes data. What remains, and whether it is safe to remove:
+
+| Where | What | Delete? |
+|---|---|---|
+| `~/.dupe-guard/` | config, repo conventions, search index, state | safe; you lose the config and conventions |
+| your vault (`~/second-brain` by default) | your notes | keep them |
+
+The vault is deliberately **outside** `~/.dupe-guard`, so cleaning the data
+folder can never take the notes with it.
+
+### Releasing (maintainers)
+
+`/plugin update` only moves users forward when the version changes; code
+pushed without a bump never reaches anyone, and the update just says "already
+at the latest version". So every release goes through:
+
+```bash
+python3 scripts/release.py 0.4.0 --push
+```
+
+It bumps both manifests, runs the tests (and leaves the version alone if they
+fail), commits, and tags with `claude plugin tag`, which checks that the two
+manifests agree.
 
 ## Second brain
 
@@ -173,7 +211,7 @@ Ask Claude to set it up (`/dupe-guard:memory`), or write
 {
   "brain": {
     "enabled": true,
-    "vault": "~/Documents/vault",
+    "vault": "~/second-brain",
     "languages": ["en"],
     "note_language": "English"
   }
@@ -194,7 +232,8 @@ project note and that session's conversation), through your own Claude Code.
 ## Where it writes
 
 Everything goes to `~/.dupe-guard/` (`cache/`, `state/`, `conventions/`, and
-`brain/` for the second brain's index and queue).
+`brain/` for the second brain's index and queue), except the vault itself,
+which defaults to `~/second-brain`.
 Override with `DUPE_GUARD_HOME`. It writes nothing into your repositories.
 Session state older than 7 days is pruned automatically.
 
@@ -237,6 +276,11 @@ page and from an admitted correction, and `distill` against a fake `claude`
 (dry run, insertion before the closing section with the session's date, one
 retry on bad format, giving up after two, EMPTY, staleness needing a majority,
 commits without trailers).
+
+The install path has seven: everything `hooks.json` declares gets registered,
+running it again syncs without duplicating, an older install picks up new
+hooks, it refuses with another guard or with the plugin enabled, and uninstall
+removes only its own entries and deletes no data.
 
 The skill scripts and manifests have nine more: `difflook` on the working diff
 and on a branch, `smell` finding an N+1, `propose` drafting without writing, and
