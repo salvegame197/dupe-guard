@@ -28,7 +28,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.core import DATA, fold, load_config                  # noqa: E402
+from brain.core import DATA, fold, is_dataless, load_config     # noqa: E402
 
 INDEX = DATA / "ksearch-index.jsonl"
 STOPWORDS = DATA / "ksearch-stopwords.json"
@@ -174,11 +174,15 @@ def build_index() -> int:
         # the evaluation page holds the questions themselves; indexed, it
         # answers them and the score lies
         skip = {str((vault / cfg.get("truth_page", "")).resolve())} if cfg.get("truth_page") else set()
+        evicted = 0
         if vault.is_dir():
             for p in vault.rglob("*.md"):
                 if any(part.startswith((".", "data-")) for part in p.relative_to(vault).parts):
                     continue
                 if str(p.resolve()) in skip:
+                    continue
+                if is_dataless(p):
+                    evicted += 1          # not on disk: reading would block on the cloud
                     continue
                 doc = index_vault(p, vault)
                 if doc:
@@ -206,6 +210,9 @@ def build_index() -> int:
     size = INDEX.stat().st_size / 1024 / 1024
     print(f"indexed {written} documents in {time.time() - started:.1f}s "
           f"({size:.1f} MB in {INDEX})", file=sys.stderr)
+    if evicted:
+        print(f"{evicted} vault page(s) skipped: not on disk (cloud placeholder). "
+              f"On macOS: brctl download \"{vault}\"", file=sys.stderr)
     n = build_stopwords()
     print(f"{n} non-discriminating words derived from the corpus ({STOPWORDS})",
           file=sys.stderr)

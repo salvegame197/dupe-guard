@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.core import DATA, fold, load_config                             # noqa: E402
+from brain.core import DATA, fold, is_dataless, load_config                # noqa: E402
 
 QUEUE = DATA / "distill-queue.jsonl"
 PATH_IN_TICKS = re.compile(r"`((?:[\w.@-]+/)+[\w.@-]+\.[A-Za-z0-9]{1,6})`")
@@ -132,7 +132,7 @@ def scan(cfg):
     for note, repo in repos.items():
         repo = Path(repo)
         found = [p for p in cfg["vault"].rglob(f"{note}.md") if ".obsidian" not in p.parts]
-        if len(found) != 1:
+        if len(found) != 1 or is_dataless(found[0]):
             continue
         text = found[0].read_text(encoding="utf-8", errors="ignore")
         checked = len(set(PATH_IN_TICKS.findall(text)))

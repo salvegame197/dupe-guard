@@ -97,6 +97,17 @@ def load_config() -> dict:
     return cfg
 
 
+def is_dataless(path) -> bool:
+    """True when the file is a cloud placeholder whose bytes are not on disk
+    (iCloud "Optimize Mac Storage" evicts files when the disk fills). Reading
+    one blocks until the cloud delivers it, which in a hook means a hang.
+    macOS marks them with UF_DATALESS in st_flags; elsewhere always False."""
+    try:
+        return bool(os.stat(path).st_flags & 0x40000000)
+    except (OSError, AttributeError):
+        return False
+
+
 def settings(cfg: dict, key: str, defaults: dict) -> dict:
     """A config section with its defaults filled in."""
     return dict(defaults, **(cfg.get(key) or {}))

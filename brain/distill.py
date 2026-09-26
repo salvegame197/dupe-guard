@@ -41,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.core import DATA, load_config                                # noqa: E402
+from brain.core import DATA, is_dataless, load_config                   # noqa: E402
 
 QUEUE = DATA / "distill-queue.jsonl"
 DONE = DATA / "distill-done.jsonl"
@@ -166,6 +166,8 @@ def note_path(vault: Path, name: str):
     worth it.
     """
     every = [p for p in vault.rglob(f"{name}.md") if ".obsidian" not in p.parts]
+    if any(is_dataless(p) for p in every):
+        return None, f"note '{name}.md' is not on disk (cloud placeholder); download it first"
     alive = [p for p in every if p.stat().st_size > 0]
     if len(alive) > 1:
         where = ", ".join(str(p.relative_to(vault)) for p in alive)
