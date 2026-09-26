@@ -319,7 +319,8 @@ def main() -> int:
         conv = CONV_DIR / f"{root.name}.md"
         if conv.exists():
             try:
-                body = conv.read_text().strip()
+                # counters live in HTML comments; the model does not need them
+                body = re.sub(r"\s*<!--.*?-->", "", conv.read_text(), flags=re.S).strip()
                 if body:
                     parts.append(f"## Conventions for {root.name}\n\n{body}")
             except Exception:

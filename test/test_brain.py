@@ -475,3 +475,67 @@ class Etapa2(BrainCase):
         self.assertIn("`src/gone.py` no longer exists", text)
         self.assertLess(text.index("## Files"), text.index("`src/gone.py` no longer exists"))
         self.assertLess(text.index("`src/gone.py` no longer exists"), text.index("## Decisions"))
+
+
+class Etapa3(BrainCase):
+    """Rules with counters: used without incident +1, misled -1, zero retires."""
+
+    def conv(self, text):
+        d = self.home / "conventions"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "billing-api.md").write_text(text)
+        return d / "billing-api.md"
+
+    def transcript_with(self, correction=None, admit="You're right, I made that up.", edit=True):
+        rows = [line(type="attachment", timestamp="2026-09-20T10:00:05Z",
+                     attachment={"type": "hook_additional_context", "hookName": "PreToolUse:Write",
+                                 "content": ["## Conventions for billing-api\n\n- errors via AppError"]})]
+        if edit:
+            rows.append(line(type="assistant", cwd=str(self.repo), timestamp="2026-09-20T10:00:10Z",
+                             message={"role": "assistant", "content": [
+                                 {"type": "tool_use", "id": "t1", "name": "Edit",
+                                  "input": {"file_path": f"{self.repo}/src/invoice.py"}}]}))
+        if correction:
+            rows.append(line(type="user", timestamp="2026-09-20T10:01:00Z", message={"role": "user", "content": correction}))
+            rows.append(line(type="assistant", timestamp="2026-09-20T10:01:20Z",
+                             message={"role": "assistant", "content": [{"type": "text", "text": admit}]}))
+        tp = self.tmp / "c.jsonl"
+        tp.write_text("".join(rows))
+        return tp
+
+    def test_used_without_incident_counts_up(self):
+        f = self.conv("## Confirmed patterns\n\n- Errors: always via `AppError` (`src/errors.py`). Never a bare throw.\n")
+        out = self.run_py("conventions.py", args=["--tally", str(self.transcript_with())])
+        self.assertIn("+1 -0", out)
+        self.assertIn("<!-- votes:3 -->", f.read_text())
+
+    def test_a_matching_correction_counts_down_and_zero_retires(self):
+        f = self.conv("## Confirmed patterns\n\n- Errors: always via `AppError` (`src/errors.py`). Never a bare throw. <!-- votes:1 -->\n"
+                      "- Dates only through `lib/dates.py`. <!-- votes:2 -->\n\n## Superseded\n")
+        tp = self.transcript_with(correction="why did you say errors must go through AppError? that is wrong here, we throw plain errors")
+        out = self.run_py("conventions.py", args=["--tally", str(tp)])
+        self.assertIn("-1, retired 1", out)
+        text = f.read_text()
+        self.assertIn("## Superseded", text)
+        self.assertIn("rule retired", text)
+        self.assertLess(text.index("## Superseded"), text.index("always via `AppError`"))   # moved below
+        self.assertIn("Dates only through `lib/dates.py`. <!-- votes:3 -->", text)          # the other one was used fine
+
+    def test_no_edit_in_the_repo_changes_nothing(self):
+        f = self.conv("## Confirmed patterns\n\n- Errors: always via `AppError`. <!-- votes:2 -->\n")
+        before = f.read_text()
+        self.run_py("conventions.py", args=["--tally", str(self.transcript_with(edit=False))])
+        self.assertEqual(f.read_text(), before)
+
+    def test_a_new_rule_from_a_proposal_starts_at_two(self):
+        rows = [line(type="user", timestamp="2026-09-20T10:01:00Z",
+                     message={"role": "user", "content": "why did you say the job runs hourly? it is nightly"}),
+                line(type="assistant", timestamp="2026-09-20T10:01:20Z",
+                     message={"role": "assistant", "content": [{"type": "text", "text": "You're right, I made that up."}]})]
+        tp = self.tmp / "n.jsonl"
+        tp.write_text("".join(rows))
+        self.run_py("proposals.py", args=["--generate", str(tp), "n1", str(self.repo), "--record"])
+        page = self.vault / "Harness Proposals.md"
+        page.write_text(page.read_text().replace("- [ ] `co-", "- [x] `co-"))
+        self.run_py("proposals.py", args=["--apply"])
+        self.assertIn("<!-- votes:2 -->", (self.home / "conventions" / "billing-api.md").read_text())

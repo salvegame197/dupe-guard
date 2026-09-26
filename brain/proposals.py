@@ -264,7 +264,7 @@ def apply(cfg):
                                   encoding="utf-8")
             said = it["text"].split(" — ")[0]
             with open(target, "a", encoding="utf-8") as f:
-                f.write(f"\n- **Rule (from a correction on {today}, review the wording)**: {said}\n")
+                f.write(f"\n- **Rule (from a correction on {today}, review the wording)**: {said} <!-- votes:2 -->\n")
         elif it["kind"] == "stale":
             if not mark_stale(cfg, it, today):
                 continue

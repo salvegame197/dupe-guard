@@ -153,6 +153,14 @@ class GuardTest(unittest.TestCase):
         os.utime(f, (old, old))
         self.assertIsNone(self.run_guard(self.bash_payload("echo hi")))
 
+    def test_conventions_are_injected_without_html_comments(self):
+        conv = self.home / "conventions"
+        conv.mkdir(parents=True)
+        (conv / "repo.md").write_text("## Confirmed patterns\n\n- Errors via AppError <!-- votes:2 -->\n")
+        out = self.run_guard(self.payload(CLONE))
+        self.assertIn("Errors via AppError", out)
+        self.assertNotIn("votes:", out)
+
     def test_prunes_old_session_state(self):
         state = self.home / "state"
         state.mkdir(parents=True)

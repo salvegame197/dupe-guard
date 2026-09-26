@@ -281,6 +281,17 @@ def main() -> int:
     except Exception:
         pass
 
+    # Rules prove themselves or retire: one session's evidence updates the
+    # counters of the conventions it injected (see brain/conventions.py).
+    try:
+        from brain import conventions
+        t = conventions.tally(tp, cfg)
+        if t["up"] or t["down"]:
+            lines += [f"_{L['conventions']}: +{t['up']} −{t['down']}"
+                      + (f", {t['retired']} {L['retired']}" if t["retired"] else "") + "_", ""]
+    except Exception:
+        pass
+
     # The transcript path is deliberate: while it lives, the detail can be
     # reopened. After that, what remains is what is written here.
     lines += [f"_Transcript: `{tp}` — {L['transcript_expires']}._", "", "---", ""]
