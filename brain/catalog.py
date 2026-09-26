@@ -16,6 +16,7 @@ by the user, never to a word in a page body.
 import argparse
 import json
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -85,8 +86,8 @@ MAX_CHARS = 3500
 
 
 def cfg_settings(cfg):
-    return settings(cfg, "catalog", {"enabled": False, "url": "http://localhost:11434",
-                                     "model": "qwen2.5:3b", "promote_at": 2})
+    return settings(cfg, "catalog", {"enabled": False, "writer": "ollama", "url": "http://localhost:11434",
+                                     "model": "qwen2.5:3b", "claude_model": "haiku", "promote_at": 2})
 
 
 # ---------------------------------------------------------------- frontmatter
@@ -368,10 +369,22 @@ def kind_from_path(rel: str) -> str:
 
 
 def ask_model(title: str, text: str, cfg: dict):
+    """The header proposal for a page, from the configured writer: the local
+    model (free, uneven) or a Claude model through `claude -p` (costs quota,
+    abstracts and classifies reliably). Same prompt, same validation after."""
     s = cfg_settings(cfg)
     lang = cfg["languages"][0] if cfg["languages"][0] in PROMPTS else "en"
     prompt = PROMPTS[lang].format(kinds="|".join(KINDS), types="|".join(TYPES), preds="|".join(PREDICATES),
                                   title=title) + text[:MAX_CHARS]
+    if s.get("writer") == "claude":
+        from brain import distill
+        try:
+            r = subprocess.run([distill.claude_bin(), "-p", "--model", s.get("claude_model", "haiku")],
+                               input=prompt, capture_output=True, text=True, timeout=240, env=distill.child_env())
+            m = re.search(r"\{.*\}", r.stdout or "", re.S)
+            return json.loads(m.group(0)) if m else None
+        except (subprocess.SubprocessError, OSError, ValueError):
+            return None
     req = urllib.request.Request(f"{s['url'].rstrip('/')}/api/generate",
                                  data=json.dumps({"model": s["model"], "prompt": prompt, "stream": False,
                                                   "format": "json",
@@ -414,7 +427,7 @@ def save_candidates(c):
     CANDIDATES.write_text(json.dumps(c, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def backfill(cfg, limit=0, prefix="", force=False, log=print):
+def backfill(cfg, limit=0, prefix="", force=False, log=print, workers=1):
     """Write a header for every page that has none. Entities the model names
     become candidates; a candidate seen on `promote_at` pages (or owned by
     the user) enters the authority. Pages are rewritten in place."""
@@ -423,19 +436,26 @@ def backfill(cfg, limit=0, prefix="", force=False, log=print):
     candidates = load_candidates()
     done = failed = 0
     t0 = time.time()
-    todo = [(rel, p) for rel, p in vault_pages(cfg) if rel.startswith(prefix)]
-    for rel, p in todo:
-        if limit and done + failed >= limit:
-            break
-        if is_dataless(p):
+    todo = []
+    for rel, p in vault_pages(cfg):
+        if not rel.startswith(prefix) or is_dataless(p):
             continue
         text = p.read_text(encoding="utf-8", errors="ignore")
         lines, body = split_header(text)
         existing = parse_header(lines) if lines is not None else {}
         if existing.get("schema") and not force:
             continue
-        title = Path(rel).stem
-        ans = ask_model(title, body.strip(), cfg)
+        todo.append((rel, p, text, body))
+        if limit and len(todo) >= limit:
+            break
+    # The model calls run in parallel; the authority and the pages are
+    # written by this thread only, in order, so two pages naming the same
+    # new thing cannot race into two cards.
+    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    answers = [pool.submit(ask_model, Path(rel).stem, body.strip(), cfg) for rel, p, text, body in todo]
+    for (rel, p, text, body), fut in zip(todo, answers):
+        ans = fut.result()
         if not isinstance(ans, dict):
             failed += 1
             continue
@@ -517,10 +537,11 @@ def main() -> int:
     ap.add_argument("-n", "--limit", type=int, default=0)
     ap.add_argument("--prefix", default="")
     ap.add_argument("--force", action="store_true", help="rewrite headers that exist")
+    ap.add_argument("--workers", type=int, default=1, help="parallel model calls")
     a = ap.parse_args()
     cfg = load_config()
     if a.backfill:
-        backfill(cfg, a.limit, a.prefix, a.force)
+        backfill(cfg, a.limit, a.prefix, a.force, workers=a.workers)
         rows, problems, skipped = rebuild(cfg)
         print(f"catalog: {len(rows)} page(s), {len(problems)} with problems, {skipped} without any header")
     if a.rebuild or a.check:
