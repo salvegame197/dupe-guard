@@ -57,7 +57,8 @@ TYPES = {
 PREDICATES = ("owns", "uses", "is_a", "located_in", "works_at", "stack", "status",
               "decided", "price", "when", "part_of", "related", "compared", "sold", "bought")
 USER = "user"
-GENERIC = {n for by in TYPES.values() for ns in by.values() for n in ns} | {"produto", "product", "item", "coisa", "thing"}
+GENERIC = ({n for by in TYPES.values() for ns in by.values() for n in ns}
+           | {"produto", "product", "item", "coisa", "thing", "user", "usuario", "usuário", "eu", "owner", "me", "i"})
 # "device" is where the model puts anything with a plug; the everyday noun
 # is more specific. The name usually says which.
 REFINE = (("watch", (r"\bwatch\b", r"\brelogio\b", r"\bgarmin\b")),
@@ -570,6 +571,60 @@ def backfill(cfg, limit=0, prefix="", force=False, log=print, workers=1):
     return done, failed
 
 
+# ---------------------------------------------------------------- relink
+def relink(cfg, log=print):
+    """Point every header at the authority as it is now. Cards get merged
+    and renamed after pages were written; an id nobody has any more is
+    matched by its slug against the variants, and "user" is never an
+    entity, only a subject."""
+    authority = load_authority(cfg)
+    by_slug = {}
+    for e in authority.values():
+        for name in [e.get("canonical", "")] + list(e.get("variants") or []):
+            by_slug.setdefault(slug(name), e["id"])
+    user_ids = {f"{t}-user" for t in TYPES} | {"person-owner", "user"}
+
+    def map_id(eid):
+        if eid in authority:
+            return eid
+        if eid in user_ids:
+            return USER
+        _, _, rest = eid.partition("-")
+        return by_slug.get(rest)
+
+    changed = 0
+    for rel, p in vault_pages(cfg):
+        h = read_header_only(p)
+        if not h or "schema" not in h:
+            continue
+        ents, claims, touched = [], [], False
+        for eid in h.get("entities") or []:
+            new = map_id(eid)
+            if new != eid:
+                touched = True
+            if new and new != USER and new not in ents:
+                ents.append(new)
+        for c in h.get("claims") or []:
+            parts = str(c).split("|")
+            if len(parts) == 3:
+                sub, obj = map_id(parts[0]) or parts[0], map_id(parts[2]) or parts[2]
+                if (sub, obj) != (parts[0], parts[2]):
+                    touched = True
+                c = "|".join([sub, parts[1], obj])
+            claims.append(c)
+        if touched:
+            fields = {**{k: h.get(k) for k in OUR_KEYS}, "entities": ents, "claims": claims}
+            clean, _ = validate(fields, authority)
+            p.write_text(write_header(p.read_text(encoding="utf-8", errors="ignore"), clean), encoding="utf-8")
+            changed += 1
+    # Pages listed on a card must carry the card, and vice versa.
+    for e in authority.values():
+        e["pages"] = [pg for pg in e.get("pages") or [] if (Path(cfg["vault"]) / pg).exists()]
+    save_authority(cfg, authority)
+    log(f"relinked {changed} page(s)")
+    return changed
+
+
 # ---------------------------------------------------------------- main
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -577,6 +632,7 @@ def main() -> int:
     ap.add_argument("--backfill", action="store_true")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--resolve", metavar="PROMPT")
+    ap.add_argument("--relink", action="store_true", help="re-point headers at merged/renamed cards")
     ap.add_argument("-n", "--limit", type=int, default=0)
     ap.add_argument("--prefix", default="")
     ap.add_argument("--force", action="store_true", help="rewrite headers that exist")
@@ -587,6 +643,10 @@ def main() -> int:
         backfill(cfg, a.limit, a.prefix, a.force, workers=a.workers)
         rows, problems, skipped = rebuild(cfg)
         print(f"catalog: {len(rows)} page(s), {len(problems)} with problems, {skipped} without any header")
+    if a.relink:
+        relink(cfg)
+        rows, problems, skipped = rebuild(cfg)
+        print(f"catalog: {len(rows)} page(s), {len(problems)} with problems")
     if a.rebuild or a.check:
         rows, problems, skipped = rebuild(cfg)
         print(f"catalog: {len(rows)} page(s) with a header, {len(problems)} with problems, {skipped} without any header")

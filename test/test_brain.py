@@ -815,3 +815,21 @@ class CatalogNames(unittest.TestCase):
         auth = {"vehicle-fiat-argo": {"id": "vehicle-fiat-argo", "type": "vehicle", "canonical": "Fiat Argo", "variants": []}}
         self.assertEqual(catalog.entity_id("Fiat Argo 2024 Trekking", "vehicle", auth), "vehicle-fiat-argo")
         self.assertIsNone(catalog.entity_id("Fiat Mobi", "vehicle", auth))
+
+
+class CatalogRelink(BrainCase):
+    def test_relink_points_old_ids_at_the_merged_card_and_drops_user(self):
+        sys.path.insert(0, str(ROOT))
+        from brain import catalog, core
+        cfg = core.load_config(); cfg.update({"vault": self.vault, "languages": ["pt"], "catalog": {"enabled": True}})
+        catalog.save_authority(cfg, {"vehicle-fiat-argo": {"id": "vehicle-fiat-argo", "type": "vehicle", "canonical": "Fiat Argo",
+                                                            "variants": ["Fiat Argo 2024 Trekking"], "owner": "user", "pages": ["fuel.md", "gone.md"]}})
+        (self.vault / "fuel.md").write_text("---\nschema: 1\nkind: conversation\nentities: [person-user, vehicle-fiat-argo-2024-touring]\n"
+                                            "claims: [\"person-user|owns|vehicle-fiat-argo-2024-touring\", \"vehicle-fiat-argo-2024-touring|status|ok\"]\n"
+                                            "title_assigned: true\nsummary: s\n---\n\nbody\n")
+        self.assertEqual(catalog.relink(cfg, log=lambda *a: None), 1)
+        h = catalog.read_header_only(self.vault / "fuel.md")
+        self.assertEqual(h["entities"], ["vehicle-fiat-argo"])
+        self.assertEqual(h["claims"], ["user|owns|vehicle-fiat-argo", "vehicle-fiat-argo|status|ok"])
+        self.assertEqual(catalog.load_authority(cfg)["vehicle-fiat-argo"]["pages"], ["fuel.md"])
+        self.assertEqual([e["id"] for e, _, _ in catalog.resolve("qual é o meu carro?", cfg)], ["vehicle-fiat-argo"])
