@@ -265,6 +265,9 @@ def apply(cfg):
             said = it["text"].split(" — ")[0]
             with open(target, "a", encoding="utf-8") as f:
                 f.write(f"\n- **Rule (from a correction on {today}, review the wording)**: {said}\n")
+        elif it["kind"] == "stale":
+            if not mark_stale(cfg, it, today):
+                continue
         else:
             continue
         txt = txt.replace(it["line"], it["line"] + f" ✅ {L['applied']} {today}", 1)
@@ -274,6 +277,33 @@ def apply(cfg):
         page.write_text(txt, encoding="utf-8")
     print(f"{n} applied")
     return 0
+
+
+STALE_TEXT = re.compile(r"`([^`]+)` .*?«(.+?)»")
+
+
+def mark_stale(cfg, it, today) -> bool:
+    """Mark the section that names a path the repo no longer has. The mark
+    goes right under the heading; nothing is deleted."""
+    m = STALE_TEXT.search(it["text"])
+    if not m:
+        return False
+    path, section = m.group(1), m.group(2)
+    found = [p for p in cfg["vault"].rglob(f"{it['target']}.md") if ".obsidian" not in p.parts]
+    if len(found) != 1:
+        return False
+    note = found[0]
+    txt = note.read_text(encoding="utf-8")
+    L = labels(cfg)
+    line = f"\n\n> ⚠️ **{L['superseded_on']} {today}**: `{path}` {L['no_longer_exists']}"
+    if section == "(top)":
+        h = re.search(r"^# .+$", txt, re.M)
+    else:
+        h = re.search(rf"^#{{2,3}} {re.escape(section)}\s*$", txt, re.M)
+    if not h or f"`{path}` {L['no_longer_exists']}" in txt:
+        return False
+    note.write_text(txt[:h.end()] + line + txt[h.end():], encoding="utf-8")
+    return True
 
 
 def main():

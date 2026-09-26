@@ -23,6 +23,7 @@ Usage:
     distill.py --apply         # write into the notes and clear the queue
     distill.py --limit 3       # only the N oldest pending sessions
     distill.py --stale <note>  # only the staleness check on a note
+    distill.py --auto          # unattended batch (what the Stop hook starts)
 """
 
 import argparse
@@ -35,6 +36,7 @@ import sys
 import tempfile
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -43,8 +45,31 @@ from brain.core import DATA, load_config                                # noqa: 
 
 QUEUE = DATA / "distill-queue.jsonl"
 DONE = DATA / "distill-done.jsonl"
+REPORT = DATA / "distill-report.jsonl"
+LOCK = DATA / ".distill.lock"
+AUTO_LOG = DATA / "distill-auto.log"
 TIMEOUT = 300
-CLAUDE = os.environ.get("DUPE_GUARD_CLAUDE", "claude")
+LOCK_STALE = 2 * 3600
+
+
+def claude_bin(cfg=None) -> str:
+    """The claude binary. Hooks may run with a reduced PATH where `claude`
+    is not found; look in the places the installer uses before giving up."""
+    import shutil
+    forced = os.environ.get("DUPE_GUARD_CLAUDE") or (cfg or {}).get("claude_bin")
+    if forced:
+        return forced
+    found = shutil.which("claude")
+    if found:
+        return found
+    for p in (Path.home() / ".local/bin/claude", Path("/usr/local/bin/claude"),
+              Path("/opt/homebrew/bin/claude")):
+        if p.exists():
+            return str(p)
+    return "claude"
+
+
+CLAUDE = claude_bin()
 
 INSTRUCTIONS = """You are distilling ONE work session into the project note of \
 a second brain kept as markdown.
@@ -285,10 +310,12 @@ def stamp_date(block: str, day: str) -> str:
 
 
 def ask(prompt: str, model: str):
-    """(ok, stdout or error)."""
+    """(ok, stdout or error). CLAUDE* variables are dropped so a claude
+    started from inside a session does not think it is that session."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
     try:
         r = subprocess.run([CLAUDE, "-p", "--model", model], input=prompt,
-                           capture_output=True, text=True, timeout=TIMEOUT)
+                           capture_output=True, text=True, timeout=TIMEOUT, env=env)
     except (subprocess.SubprocessError, OSError) as e:
         return False, str(e)
     if r.returncode != 0:
@@ -582,8 +609,101 @@ def mark_done(item):
         pass
 
 
+def pending_stats(cfg):
+    """(count, oldest age in hours) of what is waiting."""
+    items = queue(cfg)
+    if not items:
+        return 0, 0.0
+    oldest = min((i.get("ts") or "9999") for i in items)
+    try:
+        age = (datetime.now() - datetime.fromisoformat(oldest).replace(tzinfo=None)).total_seconds() / 3600
+    except ValueError:
+        age = 0.0
+    return len(items), max(age, 0.0)
+
+
+def should_run(cfg) -> bool:
+    """Accumulation, not the clock: enough sessions waiting, or one waiting
+    too long. The way reflection fires in Generative Agents, when importance
+    has piled up, not at a fixed hour."""
+    if not cfg.get("distill_auto"):
+        return False
+    if LOCK.exists() and time.time() - LOCK.stat().st_mtime < LOCK_STALE:
+        return False
+    n, age = pending_stats(cfg)
+    return n >= cfg.get("distill_min_pending", 3) or (n and age >= cfg.get("distill_max_age_hours", 24))
+
+
+def report(entry: dict):
+    try:
+        REPORT.parent.mkdir(parents=True, exist_ok=True)
+        with REPORT.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": int(time.time()), **entry}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def auto(cfg) -> int:
+    """Unattended run: a batch, no gate, one commit per note when the vault
+    is a git repo, and a report line per note for the next session start.
+    The gate that stopped after the first note is replaced by that report
+    plus `git revert`: review after, with one command to undo."""
+    vault = cfg["vault"]
+    if LOCK.exists() and time.time() - LOCK.stat().st_mtime < LOCK_STALE:
+        return 0
+    try:
+        LOCK.parent.mkdir(parents=True, exist_ok=True)
+        LOCK.write_text(str(os.getpid()))
+        items = queue(cfg, cfg.get("distill_batch", 5))
+        if not items:
+            return 0
+        problems = lint(vault, items)
+        if problems:
+            report({"kind": "lint", "problems": [f"[{k}] {m}" for k, m in problems]})
+            return 1
+        is_git = (vault / ".git").exists()
+        for it in items:
+            note, err = note_path(vault, it["note"])
+            if err:
+                report({"kind": "skip", "note": it["note"], "day": it["day"], "why": err})
+                mark_done(it)
+                continue
+            out = distill(it, note, cfg)
+            if out.startswith("__ERROR__"):
+                report({"kind": "error", "note": it["note"], "day": it["day"], "why": out[10:120]})
+                continue                # not marked done: retried next run
+            if is_empty(out):
+                report({"kind": "empty", "note": it["note"], "day": it["day"]})
+                mark_done(it)
+                continue
+            if insert(note, out, it["session_id"]):
+                title = re.search(r"^#{2,3} (.+)$", out, re.M)
+                n = mark_superseded(note, staleness(note, it["session_id"], cfg["distill_model"],
+                                                    cfg.get("distill_samples", 3)),
+                                    title.group(1) if title else it["day"], cfg.get("distill_samples", 3))
+                sha = None
+                if is_git:
+                    commit(vault, note, it)
+                    try:
+                        sha = subprocess.run(["git", "-C", str(vault), "rev-parse", "--short", "HEAD"],
+                                             capture_output=True, text=True, timeout=10).stdout.strip()
+                    except (subprocess.SubprocessError, OSError):
+                        pass
+                report({"kind": "written", "note": it["note"], "day": it["day"],
+                        "title": title.group(1) if title else "", "superseded": n, "commit": sha})
+            mark_done(it)
+        return 0
+    finally:
+        try:
+            LOCK.unlink()
+        except OSError:
+            pass
+
+
 def main() -> int:
     cfg = load_config()
+    if "--auto" in sys.argv[1:]:
+        return auto(cfg)
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="really write")
     ap.add_argument("--limit", type=int)

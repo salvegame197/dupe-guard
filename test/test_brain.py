@@ -79,7 +79,7 @@ def transcript(path, cwd, prompts, sid="s1", extra=()):
     Path(path).write_text("".join(rows))
 
 
-class Brain(unittest.TestCase):
+class BrainCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="dupe-guard-brain-"))
         self.home = self.tmp / "home"
@@ -127,6 +127,20 @@ class Brain(unittest.TestCase):
     def raw_today(self):
         files = list((self.vault / "Sessions" / "Raw").glob("*.md"))
         return files[0].read_text() if files else ""
+
+    def reply(self, kind, n, text):
+        (self.fake / f"{kind}-{n}.txt").write_text(text)
+
+    def queue_one(self):
+        self.end_session(["make invoice retries use exponential backoff please",
+                          "keep the nightly job, do not move invoices to a queue",
+                          "and write down why we kept the nightly job"])
+
+    def note(self):
+        return (self.vault / "Projects" / "billing-api.md").read_text()
+
+
+class Brain(BrainCase):
 
     # ------------------------------------------------------------ off by default
 
@@ -297,17 +311,6 @@ class Brain(unittest.TestCase):
 
     # ----------------------------------------------------------------- distill
 
-    def reply(self, kind, n, text):
-        (self.fake / f"{kind}-{n}.txt").write_text(text)
-
-    def queue_one(self):
-        self.end_session(["make invoice retries use exponential backoff please",
-                          "keep the nightly job, do not move invoices to a queue",
-                          "and write down why we kept the nightly job"])
-
-    def note(self):
-        return (self.vault / "Projects" / "billing-api.md").read_text()
-
     def test_distill_dry_run_writes_nothing(self):
         self.queue_one()
         self.reply("distill", 0, "## Kept the nightly job 🔑\n\n- A queue doubles the failure modes.")
@@ -377,3 +380,98 @@ class Brain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Etapa2(BrainCase):
+    """Unattended distilling, the morning report, and the freshness lint."""
+
+    def enable_auto(self, **kw):
+        cfg = {"brain": {"enabled": True, "vault": str(self.vault), "languages": ["en"],
+                         "distill_auto": True, "distill_batch": 2, "distill_min_pending": 2,
+                         "distill_max_age_hours": 24, "claude_bin": str(self.fake / "claude"), **kw}}
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.json").write_text(json.dumps(cfg))
+
+    def test_auto_distills_a_batch_commits_and_reports(self):
+        subprocess.run(["git", "init", "-q"], cwd=self.vault, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cwd=self.vault, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"], cwd=self.vault, check=True)
+        self.enable_auto()
+        for sid in ("a1", "a2", "a3"):
+            self.end_session(["make invoice retries use exponential backoff please"] * 3, sid=sid)
+        self.reply("distill", 0, "## Kept the nightly job\n\n- reason one")
+        self.reply("distill", 1, "EMPTY")
+        env = {**self.env, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        self.run_py("distill.py", env=env, args=["--auto"])
+        rep = [json.loads(l) for l in (self.home / "brain" / "distill-report.jsonl").read_text().splitlines()]
+        self.assertEqual([e["kind"] for e in rep], ["written", "empty"])        # batch of 2, third waits
+        self.assertTrue(rep[0]["commit"])
+        self.assertIn("Kept the nightly job", self.note())
+        done = (self.home / "brain" / "distill-done.jsonl").read_text()
+        self.assertIn("a1", done); self.assertIn("a2", done); self.assertNotIn("a3", done)
+        self.assertFalse((self.home / "brain" / ".distill.lock").exists())
+
+    def test_auto_leaves_a_failed_session_for_the_next_run(self):
+        self.enable_auto()
+        self.end_session(["make invoice retries use exponential backoff please"] * 3, sid="e1")
+        self.end_session(["make invoice retries use exponential backoff please"] * 3, sid="e2")
+        self.reply("distill", "default", "- bullet only, twice")
+        self.run_py("distill.py", args=["--auto"])
+        rep = [json.loads(l) for l in (self.home / "brain" / "distill-report.jsonl").read_text().splitlines()]
+        self.assertTrue(all(e["kind"] == "error" for e in rep))
+        self.assertFalse((self.home / "brain" / "distill-done.jsonl").exists())
+
+    def should_run(self):
+        # in a subprocess, so DUPE_GUARD_HOME is read at import time
+        r = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, %r); from brain import distill; "
+                            "from brain.core import load_config; print(distill.should_run(load_config()))" % str(ROOT)],
+                           capture_output=True, text=True, env=self.env, timeout=30)
+        return r.stdout.strip() == "True"
+
+    def test_should_run_needs_accumulation_and_the_switch(self):
+        self.end_session(["make invoice retries use exponential backoff please"] * 3, sid="s1")
+        self.assertFalse(self.should_run())                                     # switch off
+        self.enable_auto(distill_min_pending=2, distill_max_age_hours=10 ** 6)
+        self.assertFalse(self.should_run())                                     # 1 < 2 pending, not old
+        self.end_session(["make invoice retries use exponential backoff please"] * 3, sid="s2")
+        self.assertTrue(self.should_run())                                      # count reached
+        self.enable_auto(distill_min_pending=99, distill_max_age_hours=1)
+        self.assertTrue(self.should_run())                                      # one waited too long
+
+    def test_morning_report_is_shown_once(self):
+        (self.home / "brain").mkdir(parents=True, exist_ok=True)
+        (self.home / "brain" / "distill-report.jsonl").write_text(json.dumps(
+            {"ts": 5, "kind": "written", "note": "billing-api", "day": "2026-09-20", "title": "Kept the nightly job",
+             "superseded": 1, "commit": "abc1234"}) + "\n")
+        ctx = self.context(self.run_py("proposals_context.py", {}))
+        self.assertIn("Distilled since your last session: 1", ctx)
+        self.assertIn("git -C", ctx)
+        self.assertIn("revert abc1234", ctx)
+        self.assertIsNone(self.context(self.run_py("proposals_context.py", {})))
+
+    def test_freshness_flags_only_paths_no_repo_has(self):
+        (self.repo / "src" / "invoice.py").write_text("x")
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cwd=self.repo, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "b"], cwd=self.repo, check=True)
+        subprocess.run(["git", "checkout", "-qb", "feature"], cwd=self.repo, check=True)
+        (self.repo / "src" / "only_on_branch.py").write_text("y")
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cwd=self.repo, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "f"], cwd=self.repo, check=True)
+        subprocess.run(["git", "checkout", "-q", "-"], cwd=self.repo, check=True)
+        note = self.vault / "Projects" / "billing-api.md"
+        note.write_text(NOTE.replace("## Decisions", "## Files\n\nSee `src/invoice.py`, `src/only_on_branch.py` and `src/gone.py`.\n"
+                                                     "`src/removed.py` was deleted on purpose.\n\n## Decisions"))
+        self.end_session(["make invoice retries use exponential backoff please"] * 3, sid="f1")   # maps note -> repo
+        out = self.run_py("freshness.py", args=["--record"])
+        self.assertIn("1 missing", out)
+        self.assertIn("src/gone.py", out)
+        self.assertNotIn("only_on_branch", out.split("missing")[1])
+        page = (self.vault / "Harness Proposals.md").read_text()
+        self.assertIn("**stale** `billing-api`", page)
+        (self.vault / "Harness Proposals.md").write_text(page.replace("- [ ] `st-fresh", "- [x] `st-fresh"))
+        self.run_py("proposals.py", args=["--apply"])
+        text = note.read_text()
+        self.assertIn("Superseded on", text)
+        self.assertIn("`src/gone.py` no longer exists", text)
+        self.assertLess(text.index("## Files"), text.index("`src/gone.py` no longer exists"))
+        self.assertLess(text.index("`src/gone.py` no longer exists"), text.index("## Decisions"))

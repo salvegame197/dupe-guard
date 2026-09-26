@@ -87,6 +87,41 @@ when a majority agrees. `--stale <note>` runs only that check.
 
 Run it when the user asks. Show the dry run first.
 
+### Unattended
+
+With `"distill_auto": true` in the config, the Stop hook starts a detached
+worker once `distill_min_pending` sessions are waiting (or the oldest waited
+`distill_max_age_hours`). It distils up to `distill_batch` sessions, commits
+one note at a time when the vault is a git repository, and the next session
+start shows what was written, with the command to revert each note. Lint
+problems and errors show there too. Suggest turning it on only after the
+user has seen a few manual dry runs and liked them; it spends their plan.
+
+## Freshness
+
+Notes state facts the disk can check. `freshness.py` takes every
+`backtick/path.ext` in a project note and looks for it in every known
+repository (working tree and every local branch, root or under `src/`,
+`app/`, `lib/`, `resources/`). A path no known repo has becomes a `stale`
+proposal; applying it marks that section as superseded, never deletes.
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/brain/freshness.py            # report
+python3 ${CLAUDE_PLUGIN_ROOT}/brain/freshness.py --record   # write the proposals
+```
+
+The repository of a note is the last session folder that mapped to it, or
+`note_repos` in the config. A line that says the file was removed or renamed
+is not a stale fact and is skipped.
+
+## Known truths
+
+`truth.py` scores recall against questions with known answers, kept on a
+page in the vault (`truth_page`, a markdown table with `question` and
+`expected page` columns; several pages separated by ` / `). Run it before
+and after any change to recall: `--save` keeps the run, `--diff` compares
+the last two. hit, miss and silent are counted apart on purpose.
+
 ## Proposals
 
 At the end of each session the harness proposes changes to itself from

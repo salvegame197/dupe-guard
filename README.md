@@ -186,6 +186,11 @@ insertion asks several samples whether the new block made an older section
 false, marking that section as superseded (never deleting it) when a majority
 agrees.
 
+Unattended, when you ask for it: with `distill_auto` on, the Stop hook starts
+a detached worker once enough sessions have piled up. It distils a batch,
+commits one note at a time, and your next session starts with a report of
+what was written and the command to revert any of it.
+
 ### A harness that corrects itself
 
 Hooks that fail do so silently, and a silent hook looks exactly like a working
@@ -201,6 +206,14 @@ one. Two tools deal with that:
   convention for the repo. They land on a page in the vault with checkboxes.
   **Nothing applies itself**: you decide (in chat is fine), then
   `proposals.py --apply`.
+- **`freshness.py`** checks the facts a note states that the disk can
+  answer: every file path a project note mentions is looked up in every
+  known repository, on every branch. A path nobody has becomes a `stale`
+  proposal; applying it marks the section as superseded, never deletes.
+- **`truth.py`** scores recall against questions with known answers, kept as
+  a table in the vault. On the vault this was built on, five changes judged
+  by it took recall from 30% to 70% of expected pages; the biggest one was
+  indexing pages by section instead of as a single 8,000-character blob.
 
 ### Enable it
 

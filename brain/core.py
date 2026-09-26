@@ -54,6 +54,16 @@ DEFAULTS = {
     "body_match_min": 14.0,
     "distill_model": "sonnet",
     "distill_samples": 3,
+    # Automatic distilling. Off by default: it spends the user's plan. When
+    # on, the Stop hook starts a detached worker once enough sessions have
+    # piled up (or the oldest waited a day), which distils up to a batch,
+    # commits one note at a time, and leaves a report for the next session.
+    "distill_auto": False,
+    "distill_batch": 5,
+    "distill_min_pending": 3,
+    "distill_max_age_hours": 24,
+    # Path to the claude binary; found on PATH or in the usual places if unset.
+    "claude_bin": None,
 }
 
 
@@ -135,6 +145,8 @@ LABELS = {
         "proposal_matched": "matched {ex} and the page was not read",
         "proposal_injections": "recall: {inj} injections, {read} with a page read",
         "applied": "applied",
+        "superseded_on": "Superseded on",
+        "no_longer_exists": "no longer exists in the repository (checked automatically)",
         "ctx_header": "# SECOND BRAIN (vault) — available in this session",
         "ctx_path": "Path",
         "ctx_content": "Content: {n} .md pages, {kb:.0f} KB (~{ktok} thousand tokens in total).",
@@ -180,6 +192,8 @@ LABELS = {
         "proposal_matched": "casou {ex} e a pagina nao foi lida",
         "proposal_injections": "recall: {inj} injecoes, {read} com pagina lida",
         "applied": "aplicada",
+        "superseded_on": "Superado em",
+        "no_longer_exists": "não existe mais no repositório (conferido automaticamente)",
         "ctx_header": "# SECOND BRAIN (vault Obsidian) — disponivel nesta sessao",
         "ctx_path": "Caminho",
         "ctx_content": "Conteudo: {n} paginas .md, {kb:.0f} KB (~{ktok} mil tokens no total).",

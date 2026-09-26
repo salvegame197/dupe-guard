@@ -38,6 +38,24 @@ def stale_lock() -> bool:
         return True
 
 
+def start_distill_if_due():
+    """Detached worker: the hook returns at once, the distilling runs on its
+    own (minutes, one model call per session). A hook that waited for it
+    would freeze the turn; SessionEnd would kill it halfway."""
+    try:
+        from brain import distill
+        cfg = load_config()
+        if not distill.should_run(cfg):
+            return
+        env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
+        with open(distill.AUTO_LOG, "a") as log:
+            subprocess.Popen([sys.executable, str(KSEARCH.parent / "distill.py"), "--auto"],
+                             stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                             start_new_session=True, env=env)
+    except Exception:
+        pass
+
+
 def main() -> int:
     if not load_config()["enabled"]:
         return 0
@@ -60,6 +78,7 @@ def main() -> int:
         # the last pass changes which pages recall should trust.
         subprocess.run([sys.executable, str(KSEARCH.parent / "hit_rate.py"), "--strength"],
                        capture_output=True, timeout=120)
+        start_distill_if_due()
         # The stamp only advances after finishing: if the reindex fails or is
         # killed, the next stop tries again instead of waiting 15 minutes.
         STAMP.write_text(str(time.time()))
