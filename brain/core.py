@@ -69,7 +69,7 @@ DEFAULTS = {
     # side adds `weight` x (cos - min_cos) to a document's score and can bring
     # in documents keywords missed.
     "embeddings": {"enabled": False, "url": "http://localhost:11434", "model": "bge-m3",
-                   "weight": 30.0, "min_cos": 0.45, "strong_cos": 0.6, "top": 20},
+                   "weight": 30.0, "min_cos": 0.45, "bonus_cos": 0.55, "strong_cos": 0.6, "gap": 0.03, "top": 20},
 }
 
 

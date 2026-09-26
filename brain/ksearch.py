@@ -101,7 +101,8 @@ def index_transcript(path: Path):
                 elif len(body) < 40:
                     continue  # short assistant noise ("Ok.", "Done.")
                 if body:
-                    turns.append({"r": kind[0], "t": body[:MAX_TURN_CHARS]})
+                    t = body[:MAX_TURN_CHARS]
+                    turns.append({"r": kind[0], "t": t, "f": fold(t)})
     except OSError:
         return None
     if not turns:
@@ -134,7 +135,8 @@ def index_vault(path: Path, root: Path):
     for chunk in re.split(r"(?=^#{1,3} )", body, flags=re.M):
         text = clean(chunk)
         if len(text) >= 40:
-            turns.append({"r": "v", "t": text[:MAX_TURN_CHARS * 2]})
+            t = text[:MAX_TURN_CHARS * 2]
+            turns.append({"r": "v", "t": t, "f": fold(t)})
     if not turns:
         return None
     rel = path.relative_to(root)
@@ -165,15 +167,22 @@ def build_index() -> int:
             for p in cfg["transcripts"].rglob("*.jsonl"):
                 doc = index_transcript(p)
                 if doc:
+                    doc["tf"] = fold(doc["title"])
                     out.write(json.dumps(doc, ensure_ascii=False) + "\n")
                     written += 1
         vault = cfg["vault"]
+        # the evaluation page holds the questions themselves; indexed, it
+        # answers them and the score lies
+        skip = {str((vault / cfg.get("truth_page", "")).resolve())} if cfg.get("truth_page") else set()
         if vault.is_dir():
             for p in vault.rglob("*.md"):
                 if any(part.startswith((".", "data-")) for part in p.relative_to(vault).parts):
                     continue
+                if str(p.resolve()) in skip:
+                    continue
                 doc = index_vault(p, vault)
                 if doc:
+                    doc["tf"] = fold(doc["title"])
                     out.write(json.dumps(doc, ensure_ascii=False) + "\n")
                     written += 1
 
@@ -345,7 +354,7 @@ def score_doc(doc, groups):
     terms_n = len(groups)
     total = 0.0
 
-    title_folded = fold(doc.get("title") or "")
+    title_folded = doc.get("tf") or fold(doc.get("title") or "")
     title_hits = sum(1 for g in groups if any(t in title_folded for t in g))
     if title_hits:
         # Quadratic in coverage: every term in the title is the strongest
@@ -355,7 +364,9 @@ def score_doc(doc, groups):
     hits = []
     for turn in doc["turns"]:
         text = turn["t"]
-        folded = fold(text)
+        # folded at index time: folding every block on every query cost
+        # ~700 ms once pages were split into sections
+        folded = turn.get("f") or fold(text)
         matched = sum(1 for g in groups if any(t in folded for t in g))
         if not matched:
             continue

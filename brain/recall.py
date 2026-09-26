@@ -295,18 +295,34 @@ def hybrid(results, prompt, terms, cfg, table):
     e = cfg.get("embeddings") or {}
     if not e.get("enabled"):
         return results
+    # Conservative, like the synonym expansion: when keywords already found a
+    # strong title match there is nothing to rescue, and a bonus would only
+    # add noise. Vectors are for what words missed.
+    strong_kw = any(r["score"] >= 2 * MIN_SCORE_TITLE and title_hit(terms, r["title"]) for r in results[:3])
+    if strong_kw:
+        return results
     from brain import embed, ksearch
     near = embed.search(prompt, cfg)
     if not near:
         return results
+    # bge-m3 cosines sit in a narrow band (right pages ~0.61, wrong ~0.56,
+    # measured), so an absolute threshold separates nothing. What does is
+    # STANDING OUT: the right page is first with a gap over the second.
+    top_cos = near[0][1]
+    second = near[1][1] if len(near) > 1 else 0.0
+    stands_out = top_cos >= e.get("strong_cos", 0.6) and top_cos - second >= e.get("gap", 0.03)
     by_id = {r["id"]: r for r in results}
     docs = None
-    for doc_id, cos in near:
+    for rank, (doc_id, cos) in enumerate(near):
+        if cos < e.get("bonus_cos", 0.55):
+            break
         bonus = round(e.get("weight", 30.0) * (cos - e.get("min_cos", 0.45)), 1)
         if doc_id in by_id:
             by_id[doc_id]["score"] = round(by_id[doc_id]["score"] + bonus, 1)
-            by_id[doc_id]["cos"] = cos
+            by_id[doc_id]["cos"] = cos if (rank == 0 and stands_out) else 0.0
             continue
+        if not (rank == 0 and stands_out):
+            continue                      # rescue only the one that stands out
         if docs is None:
             docs = {d["id"]: d for d in ksearch.load_index()}
         d = docs.get(doc_id)
