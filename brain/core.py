@@ -64,6 +64,12 @@ DEFAULTS = {
     "distill_max_age_hours": 24,
     # Path to the claude binary; found on PATH or in the usual places if unset.
     "claude_bin": None,
+    # Local embeddings (brain/embed.py). Off by default; needs an Ollama
+    # server with the model pulled. Keyword search stays the base; the vector
+    # side adds `weight` x (cos - min_cos) to a document's score and can bring
+    # in documents keywords missed.
+    "embeddings": {"enabled": False, "url": "http://localhost:11434", "model": "bge-m3",
+                   "weight": 30.0, "min_cos": 0.45, "strong_cos": 0.6, "top": 20},
 }
 
 

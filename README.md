@@ -236,6 +236,13 @@ English and Portuguese are supported: the language tunes recall's stopword
 lists and the correction phrases proposals look for. See the `memory` skill
 for every option.
 
+### Meaning, not words
+
+Optional local embeddings ([Ollama](https://ollama.com) + `bge-m3`) sit on
+top of the keyword search for the one thing words cannot do: "watch" for a
+page that only says "relogio". Off by default; when the server is down the
+search falls back to keywords on its own. Nothing leaves the machine.
+
 ### Privacy
 
 Everything stays on your machine: the vault, the index, the queue. The only

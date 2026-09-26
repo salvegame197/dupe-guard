@@ -114,6 +114,24 @@ The repository of a note is the last session folder that mapped to it, or
 `note_repos` in the config. A line that says the file was removed or renamed
 is not a stale fact and is skipped.
 
+## Meaning, not words (optional)
+
+Keyword search cannot reach paraphrase: "watch" for a page that only says
+"relogio". Local embeddings can. They need an [Ollama](https://ollama.com)
+server on the machine with a multilingual model:
+
+```bash
+brew install ollama && brew services start ollama    # or the Linux installer
+ollama pull bge-m3
+python3 ${CLAUDE_PLUGIN_ROOT}/brain/embed.py --build  # encodes the index; incremental after
+```
+
+then `"embeddings": {"enabled": true}` in the config. The reindex hook keeps
+the vectors current. Nothing leaves the machine, no key. When the server is
+down, search falls back to keywords on its own. Measure with `truth.py`
+before and after turning it on; that is what decides whether it earns its
+place on a given vault.
+
 ## Known truths
 
 `truth.py` scores recall against questions with known answers, kept on a

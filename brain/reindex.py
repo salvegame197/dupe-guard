@@ -78,6 +78,9 @@ def main() -> int:
         # the last pass changes which pages recall should trust.
         subprocess.run([sys.executable, str(KSEARCH.parent / "hit_rate.py"), "--strength"],
                        capture_output=True, timeout=120)
+        if (load_config().get("embeddings") or {}).get("enabled"):
+            subprocess.run([sys.executable, str(KSEARCH.parent / "embed.py"), "--build"],
+                           capture_output=True, timeout=900)
         start_distill_if_due()
         # The stamp only advances after finishing: if the reindex fails or is
         # killed, the next stop tries again instead of waiting 15 minutes.

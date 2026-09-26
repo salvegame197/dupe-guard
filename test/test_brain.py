@@ -139,6 +139,9 @@ class BrainCase(unittest.TestCase):
     def note(self):
         return (self.vault / "Projects" / "billing-api.md").read_text()
 
+    def reindex(self):
+        self.run_py("ksearch.py", args=["--reindex"])
+
 
 class Brain(BrainCase):
 
@@ -188,9 +191,6 @@ class Brain(BrainCase):
         self.assertIn("## Concepts", ctx)
 
     # ------------------------------------------------------------ search/recall
-
-    def reindex(self):
-        self.run_py("ksearch.py", args=["--reindex"])
 
     def test_default_vault_inside_a_hidden_folder_is_indexed(self):
         # Regression: the indexer skipped any path with a dot-folder ANYWHERE in
@@ -539,3 +539,75 @@ class Etapa3(BrainCase):
         page.write_text(page.read_text().replace("- [ ] `co-", "- [x] `co-"))
         self.run_py("proposals.py", args=["--apply"])
         self.assertIn("<!-- votes:2 -->", (self.home / "conventions" / "billing-api.md").read_text())
+
+
+class Etapa4(BrainCase):
+    """Local embeddings: a fake server maps a few words to the same vector,
+    so 'watch' finds a page that only says 'relogio' — the paraphrase case."""
+
+    SAME = {"watch": 0, "relogio": 0, "relógio": 0, "wearable": 0, "backoff": 1, "retry": 1, "retries": 1, "invoice": 2}
+
+    def start_fake_server(self):
+        import http.server, threading
+        same = self.SAME
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                out = []
+                for text in body["input"]:
+                    v = [0.05] * 8
+                    for w, i in same.items():
+                        if w in text.lower():
+                            v[i] += 1.0
+                    out.append(v)
+                data = json.dumps({"embeddings": out}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}"
+
+    def enable(self, url):
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.json").write_text(json.dumps({"brain": {
+            "enabled": True, "vault": str(self.vault), "languages": ["en"],
+            "embeddings": {"enabled": True, "url": url, "model": "fake", "weight": 30.0, "min_cos": 0.45, "top": 20}}}))
+
+    def test_build_is_incremental_and_search_finds_the_paraphrase(self):
+        url = self.start_fake_server()
+        (self.vault / "Projects" / "Apple Watch.md").write_text("# Apple Watch\n\nSold the wearable in August for a fair price.\n")
+        self.enable(url)
+        self.reindex()
+        self.assertIn("kept 0", self.run_py("embed.py", args=["--build"]))
+        out = self.run_py("embed.py", args=["--build"])
+        self.assertIn("embedded 0 new", out)
+        near = self.run_py("embed.py", args=["qual relogio eu vendi"])
+        self.assertIn("Apple Watch", near.splitlines()[0])
+
+    def test_recall_brings_a_page_keywords_missed(self):
+        url = self.start_fake_server()
+        (self.vault / "Projects" / "Apple Watch.md").write_text("# Apple Watch\n\nSold the wearable in August for a fair price.\n")
+        # keyword-only: 'relogio' is nowhere in the page -> silent
+        self.reindex()
+        self.assertIsNone(self.context(self.run_py("recall.py", {"prompt": "which relogio did I sell last year", "session_id": "e1"})))
+        self.enable(url)
+        self.run_py("embed.py", args=["--build"])
+        ctx = self.context(self.run_py("recall.py", {"prompt": "which relogio did I sell last year", "session_id": "e2"}))
+        self.assertIsNotNone(ctx)
+        self.assertIn("Apple Watch", ctx)
+
+    def test_server_down_falls_back_to_keywords(self):
+        self.enable("http://127.0.0.1:9")            # nothing listens here
+        self.reindex()
+        r = subprocess.run([sys.executable, str(BRAIN / "embed.py"), "--build"], capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not reachable", r.stderr)
+        ctx = self.context(self.run_py("recall.py", {"prompt": "how should exponential backoff work for invoice retries", "session_id": "e3"}))
+        self.assertIsNotNone(ctx)
+        self.assertIn("Exponential backoff", ctx)

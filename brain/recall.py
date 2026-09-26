@@ -226,7 +226,7 @@ def remember(session_id: str, ids: set) -> None:
         pass
 
 
-def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14.0):
+def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14.0, strong_cos=0.6):
     picked = []
     for r in results:
         if r["score"] < MIN_SCORE_TITLE:
@@ -245,7 +245,10 @@ def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14
             # A curated note may still qualify on its body alone, with a
             # higher bar; a chat log or a session may not.
             curated = r["source"] == "vault" and any(r["id"].startswith(p) for p in trusted)
-            if not (curated and r["score"] >= body_min):
+            # A strong vector match IS the title match that words could not
+            # make: "relogio" next to "Apple Watch". That is the whole point.
+            semantic = r.get("cos", 0.0) >= strong_cos
+            if not ((curated and r["score"] >= body_min) or semantic):
                 continue
         picked.append(r)
         if len(picked) >= MAX_RESULTS:
@@ -274,13 +277,47 @@ def recall(prompt: str, session_id: str, cfg: dict):
                 "project": d["project"], "date": d["date"], "id": d["id"],
                 "snippets": [ksearch.snippet(t["t"], terms) for t in b[:MAX_SNIPPETS]]}
                for s, d, b in found[:12]]
+    results = hybrid(results, prompt, terms, cfg, table)
     results.sort(key=lambda x: -x["score"])
     picked = pick(results[:8], terms, already_seen(session_id), session_id, alias_words(cfg),
-                  tuple(cfg.get("trusted_prefixes") or ()), cfg.get("body_match_min", 14.0))
+                  tuple(cfg.get("trusted_prefixes") or ()), cfg.get("body_match_min", 14.0),
+                  (cfg.get("embeddings") or {}).get("strong_cos", 0.6))
     rejected = [x for x in results[:8] if x not in picked]
     log_decision(session_id, prompt, terms, picked, rejected,
                  "" if picked else ("no title match above threshold" if results else "nothing found"))
     return terms, len(found), picked
+
+
+def hybrid(results, prompt, terms, cfg, table):
+    """Add the vector side when it is on: a bonus for documents keywords
+    already found, and new entries for documents they missed. Everything
+    downstream (title gate, trusted body match) applies to both alike."""
+    e = cfg.get("embeddings") or {}
+    if not e.get("enabled"):
+        return results
+    from brain import embed, ksearch
+    near = embed.search(prompt, cfg)
+    if not near:
+        return results
+    by_id = {r["id"]: r for r in results}
+    docs = None
+    for doc_id, cos in near:
+        bonus = round(e.get("weight", 30.0) * (cos - e.get("min_cos", 0.45)), 1)
+        if doc_id in by_id:
+            by_id[doc_id]["score"] = round(by_id[doc_id]["score"] + bonus, 1)
+            by_id[doc_id]["cos"] = cos
+            continue
+        if docs is None:
+            docs = {d["id"]: d for d in ksearch.load_index()}
+        d = docs.get(doc_id)
+        if not d:
+            continue
+        best = max(d["turns"], key=lambda t: sum(t["t"].lower().count(w) for w in terms)) if d["turns"] else None
+        results.append({"score": round(weighted(bonus, d, cfg, terms) * strength_factor(d["id"], table), 1),
+                        "source": d["src"], "title": d["title"], "project": d["project"],
+                        "date": d["date"], "id": d["id"], "cos": cos,
+                        "snippets": [ksearch.snippet(best["t"], terms)] if best else []})
+    return results
 
 
 def strength_table() -> dict:
