@@ -81,6 +81,10 @@ def main() -> int:
         if (load_config().get("embeddings") or {}).get("enabled"):
             subprocess.run([sys.executable, str(KSEARCH.parent / "embed.py"), "--build"],
                            capture_output=True, timeout=900)
+        if (load_config().get("catalog") or {}).get("enabled"):
+            # Headers only: milliseconds. The catalog is a cache of the pages.
+            subprocess.run([sys.executable, str(KSEARCH.parent / "catalog.py"), "--rebuild"],
+                           capture_output=True, timeout=120)
         start_distill_if_due()
         # The stamp only advances after finishing: if the reindex fails or is
         # killed, the next stop tries again instead of waiting 15 minutes.

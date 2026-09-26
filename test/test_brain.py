@@ -703,3 +703,102 @@ class WorkerChild(unittest.TestCase):
             self.assertFalse(core.load_config()["enabled"])
         finally:
             os.environ.clear(); os.environ.update(old)
+
+
+class Catalog(BrainCase):
+    """The catalog: headers with a closed schema, compiled without opening
+    pages, an authority file for the things in the user's life, and a
+    resolver that matches instead of scoring."""
+
+    def start_fake_extractor(self):
+        import http.server, threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                text = body["prompt"]
+                if "Fiat" in text:
+                    ans = {"kind": "conversation", "entities": [{"name": "Fiat Argo 2024", "type": "vehicle"}],
+                           "claims": [["user", "owns", "Fiat Argo 2024"], ["Fiat Argo 2024", "uses", "gasolina aditivada"]],
+                           "summary": "Combustivel do carro."}
+                else:
+                    ans = {"kind": "project", "entities": [{"name": "Northwind", "type": "project"}],
+                           "claims": [["Northwind", "stack", "Rust"], ["Northwind", "bogus", "x"]], "summary": "Projeto."}
+                data = json.dumps({"response": json.dumps(ans)}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers()
+                self.wfile.write(data)
+            def log_message(self, *a): pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}"
+
+    def cfg_with(self, url):
+        sys.path.insert(0, str(ROOT))
+        from brain import core
+        cfg = core.load_config()
+        cfg.update({"vault": self.vault, "languages": ["pt"],
+                    "catalog": {"enabled": True, "url": url, "model": "fake", "promote_at": 2}})
+        return cfg
+
+    def test_header_roundtrip_keeps_foreign_lines(self):
+        from brain import catalog
+        page = "---\ntags: [a, b]\ndate: 2026-01-01\n---\n\n# T\n\nbody\n"
+        out = catalog.write_header(page, {"schema": 1, "kind": "concept", "entities": ["x-y"],
+                                          "claims": ["user|owns|x-y"], "title_assigned": False, "summary": "s: t"})
+        lines, body = catalog.split_header(out)
+        h = catalog.parse_header(lines)
+        self.assertEqual(h["tags"], ["a", "b"]); self.assertEqual(h["date"], "2026-01-01")
+        self.assertEqual(h["kind"], "concept"); self.assertEqual(h["claims"], ["user|owns|x-y"])
+        self.assertEqual(h["summary"], "s: t"); self.assertEqual(body, "\n# T\n\nbody\n")
+        again = catalog.write_header(out, {"schema": 1, "kind": "log", "entities": [], "claims": [],
+                                           "title_assigned": True, "summary": ""})
+        self.assertEqual(catalog.parse_header(catalog.split_header(again)[0])["kind"], "log")
+        self.assertEqual(again.count("kind:"), 1)
+
+    def test_validate_drops_what_is_outside_the_schema(self):
+        from brain import catalog
+        clean, probs = catalog.validate({"schema": 1, "kind": "nope", "entities": ["known", "ghost"],
+                                         "claims": ["a|stack|b", "a|invented|b", "broken"]},
+                                        {"known": {"id": "known"}})
+        self.assertEqual(clean["kind"], "other"); self.assertEqual(clean["entities"], ["known"])
+        self.assertEqual(clean["claims"], ["a|stack|b"])
+        self.assertIn("entity:ghost", probs); self.assertIn("kind:nope", probs)
+
+    def test_backfill_writes_headers_promotes_owned_things_and_resolves_my_car(self):
+        from brain import catalog, recall
+        url = self.start_fake_extractor(); cfg = self.cfg_with(url)
+        (self.vault / "Claude Web/Personal").mkdir(parents=True, exist_ok=True)
+        (self.vault / "Claude Web/Personal/Melhor combustivel para Fiat Argo 2024.md").write_text(
+            "---\ntags: [pessoal]\n---\n\n# Melhor combustivel\n\nDono: tenho um Fiat Argo 2024 " * 30)
+        (self.vault / "Northwind.md").write_text("# Northwind\n\nRust e Axum. " * 40)
+        done, failed = catalog.backfill(cfg, log=lambda *a: None)
+        self.assertGreaterEqual(done, 2); self.assertEqual(failed, 0)   # the demo pages get headers too
+        auth = catalog.load_authority(cfg)
+        self.assertIn("vehicle-fiat-argo-2024", auth)
+        self.assertEqual(auth["vehicle-fiat-argo-2024"]["owner"], "user")
+        # The fake names Northwind on every other page, so it reaches promote_at.
+        self.assertGreaterEqual(len(auth["project-northwind"]["pages"]), 2)
+        self.assertIsNone(auth["project-northwind"]["owner"])
+        rows, problems, _ = catalog.rebuild(cfg)
+        self.assertEqual(problems, {})
+        car = next(r for r in rows if "Fiat" in r["id"])
+        self.assertIn("user|owns|vehicle-fiat-argo-2024", car["claims"])
+        self.assertNotIn("Northwind|bogus|x", next(r for r in rows if "Northwind" in r["id"])["claims"])
+        hits = catalog.resolve("Qual é o meu carro?", cfg)
+        self.assertEqual([e["id"] for e, _, _ in hits], ["vehicle-fiat-argo-2024"])
+        self.assertEqual(catalog.resolve("Qual é o meu relógio?", cfg), [])
+        self.assertEqual([e["id"] for e, _, _ in catalog.resolve("Que combustível o Fiat Argo 2024 usa?", cfg)],
+                         ["vehicle-fiat-argo-2024"])
+        res = recall.by_authority([], "qual é o meu carro?", cfg)
+        self.assertEqual(len(res), 1); self.assertIn("gasolina aditivada", res[0]["snippets"][0])
+        self.assertEqual(res[0]["authority"], "vehicle-fiat-argo-2024")
+
+    def test_catalog_reads_only_the_header(self):
+        from brain import catalog
+        cfg = self.cfg_with("http://127.0.0.1:1")
+        (self.vault / "big.md").write_text("---\nschema: 1\nkind: concept\nentities: []\nclaims: []\n"
+                                           "title_assigned: false\nsummary: s\n---\n" + "x" * 200000)
+        rows, problems, _ = catalog.rebuild(cfg)
+        self.assertEqual([r["id"] for r in rows], ["big.md"])

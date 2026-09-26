@@ -72,6 +72,7 @@ DEFAULTS = {
     # (brain/questions.py); indexed as text, so paraphrase is matched by the
     # keyword search itself. Off by default; a long background job.
     "questions": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b",
+    "catalog": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b", "promote_at": 2},
                   "per_unit": 3, "sources": ["vault"]},
     "embeddings": {"enabled": False, "url": "http://localhost:11434", "model": "bge-m3",
                    "weight": 30.0, "min_cos": 0.45, "bonus_cos": 0.55, "strong_cos": 0.6, "gap": 0.03, "top": 20},

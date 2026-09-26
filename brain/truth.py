@@ -50,7 +50,7 @@ def load_questions(page: Path):
                     "p": next(i for i, c in enumerate(low) if c in HEADER_P)}
             continue
         if cols and cells and re.fullmatch(r"\d+", cells[0]) and len(cells) > max(cols.values()):
-            expected = [e.strip() for e in cells[cols["p"]].split(" / ") if e.strip()]
+            expected = [e.strip() for e in re.split(r" / |;", cells[cols["p"]]) if e.strip()]
             rows.append({"n": int(cells[0]), "question": cells[cols["q"]], "expected": expected})
     return rows
 
@@ -60,10 +60,10 @@ def matches(expected: str, title: str) -> bool:
     return e == t or (len(e) >= 12 and (e in t or t in e))
 
 
-def run(cfg):
+def run(cfg, page=None):
     from brain import recall
     out = []
-    for q in load_questions(cfg["vault"] / cfg["truth_page"]):
+    for q in load_questions(cfg["vault"] / (page or cfg["truth_page"])):
         terms, matched, picked = recall.recall(q["question"], "", cfg)
         titles = [p["title"] for p in picked]
         if not picked:
@@ -101,9 +101,11 @@ def main() -> int:
                 print(f"  #{r['n']:<3} {before} -> {r['status']}   {r['question'][:60]}")
         return 0
 
-    rows = run(cfg)
+    # --page "Other.md": a second question set, kept blind (never tuned on).
+    page = sys.argv[sys.argv.index("--page") + 1] if "--page" in sys.argv else None
+    rows = run(cfg, page)
     if not rows:
-        print(f"no questions found in {cfg['vault'] / cfg['truth_page']}")
+        print(f"no questions found in {cfg['vault'] / (page or cfg['truth_page'])}")
         return 1
     s = summary(rows)
     for r in rows:

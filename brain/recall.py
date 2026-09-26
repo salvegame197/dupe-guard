@@ -277,6 +277,7 @@ def recall(prompt: str, session_id: str, cfg: dict):
                 "project": d["project"], "date": d["date"], "id": d["id"],
                 "snippets": [ksearch.snippet(t["t"], terms) for t in b[:MAX_SNIPPETS]]}
                for s, d, b in found[:12]]
+    results = by_authority(results, prompt, cfg) + results
     results = hybrid(results, prompt, terms, cfg, table)
     results.sort(key=lambda x: -x["score"])
     picked = pick(results[:8], terms, already_seen(session_id), session_id, alias_words(cfg),
@@ -286,6 +287,31 @@ def recall(prompt: str, session_id: str, cfg: dict):
     log_decision(session_id, prompt, terms, picked, rejected,
                  "" if picked else ("no title match above threshold" if results else "nothing found"))
     return terms, len(found), picked
+
+
+AUTHORITY_SCORE = 200.0     # above any keyword score: a card match is not a guess
+
+
+def by_authority(results, prompt, cfg):
+    """Pages the catalog names for the prompt, before any word is searched.
+    The snippet is the page's claims and summary, so the answer usually
+    arrives without the page being opened. Nothing here has a threshold."""
+    if not (cfg.get("catalog") or {}).get("enabled"):
+        return []
+    from brain import catalog
+    known = {r["id"] for r in results}
+    out = []
+    for e, pages, claims in catalog.resolve(prompt, cfg):
+        for page in pages[:2]:
+            if page["id"] in known:
+                continue
+            known.add(page["id"])
+            facts = [c.replace("|", " ") for c in (page.get("claims") or [])][:4]
+            text = "; ".join(x for x in [page.get("summary") or ""] + facts if x) or e.get("canonical", "")
+            out.append({"score": AUTHORITY_SCORE, "source": "vault", "title": page["title"], "qhit": 1.0,
+                        "project": "", "date": page.get("date", ""), "id": page["id"],
+                        "authority": e["id"], "snippets": [text[:400]]})
+    return out
 
 
 def hybrid(results, prompt, terms, cfg, table):
