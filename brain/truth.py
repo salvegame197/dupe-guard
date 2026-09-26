@@ -35,7 +35,7 @@ from brain.core import DATA, fold, load_config                             # noq
 
 RESULTS = DATA / "truth"
 HEADER_Q = ("pergunta", "question")
-HEADER_P = ("página esperada", "pagina esperada", "expected page")
+HEADER_P = ("página esperada", "pagina esperada", "expected page", "pagina", "page")
 
 
 def load_questions(page: Path):
