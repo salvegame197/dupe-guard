@@ -321,7 +321,10 @@ def build_stopwords(threshold: float = 0.25) -> int:
             docs += 1
             words = set()
             for turn in doc["turns"]:
-                words.update(re.findall(r"[a-z][a-z]{2,}", fold(turn["t"])))
+                if turn.get("r") == "q":
+                    continue        # synthetic questions repeat the same words
+                                    # everywhere and would turn real terms into noise
+                words.update(re.findall(r"[a-z][a-z]{2,}", turn.get("f") or fold(turn["t"])))
             df.update(words)
     if docs < MIN_DOCS_FOR_STOPWORDS:
         STOPWORDS.write_text("[]", encoding="utf-8")
