@@ -611,3 +611,47 @@ class Etapa4(BrainCase):
         ctx = self.context(self.run_py("recall.py", {"prompt": "how should exponential backoff work for invoice retries", "session_id": "e3"}))
         self.assertIsNotNone(ctx)
         self.assertIn("Exponential backoff", ctx)
+
+
+class Etapa5(BrainCase):
+    """Questions written ahead of time by a (fake) local model, indexed as
+    text: the user's everyday words match a stored question, not the page."""
+
+    def start_fake_generate(self):
+        import http.server, threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                text = body["prompt"]
+                q = "Que relogio eu quis vender?\nPor quanto vendi o wearable?" if "Apple Watch" in text else "Como funciona o backoff?"
+                data = json.dumps({"response": q}).encode()
+                self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}"
+
+    def test_stored_questions_make_the_paraphrase_findable(self):
+        url = self.start_fake_generate()
+        (self.vault / "Projects" / "Apple Watch.md").write_text(
+            "# Apple Watch\n\nSold the wearable in August for a fair price, after comparing offers on two "
+            "marketplaces and checking the trade-in value at the store.\n")
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "config.json").write_text(json.dumps({"brain": {"enabled": True, "vault": str(self.vault), "languages": ["pt"],
+                                                                     "questions": {"enabled": True, "url": url, "model": "fake"}}}))
+        self.reindex()
+        self.assertIsNone(self.context(self.run_py("recall.py", {"prompt": "que relogio eu quis vender mesmo", "session_id": "q1"})))
+        out = self.run_py("questions.py", args=["--run"])
+        self.assertIn("generated for", out)
+        self.reindex()                                   # ingests the questions
+        ctx = self.context(self.run_py("recall.py", {"prompt": "que relogio eu quis vender mesmo", "session_id": "q2"}))
+        self.assertIsNotNone(ctx)
+        self.assertIn("Apple Watch", ctx)
+        self.assertIn("generated for 0", self.run_py("questions.py", args=["--run"]))     # incremental
+        self.assertIn("self-test", self.run_py("questions.py", args=["--eval", "5"]))

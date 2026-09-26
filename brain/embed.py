@@ -33,7 +33,7 @@ from array import array
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.core import DATA, load_config                                   # noqa: E402
+from brain.core import DATA, load_config, settings as core_settings       # noqa: E402
 
 VEC = DATA / "embeddings.bin"
 META = DATA / "embeddings.json"
@@ -43,9 +43,8 @@ MAX_UNITS_PER_DOC = 40
 
 
 def settings(cfg):
-    e = dict({"enabled": False, "url": "http://localhost:11434", "model": "bge-m3",
-              "weight": 30.0, "min_cos": 0.45, "strong_cos": 0.6, "top": 20}, **(cfg.get("embeddings") or {}))
-    return e
+    return core_settings(cfg, "embeddings", {"enabled": False, "url": "http://localhost:11434", "model": "bge-m3",
+                                             "weight": 30.0, "min_cos": 0.45, "strong_cos": 0.6, "top": 20})
 
 
 def embed_texts(texts, cfg, timeout=120):

@@ -68,6 +68,11 @@ DEFAULTS = {
     # server with the model pulled. Keyword search stays the base; the vector
     # side adds `weight` x (cos - min_cos) to a document's score and can bring
     # in documents keywords missed.
+    # Questions written ahead of time for every block by a small local model
+    # (brain/questions.py); indexed as text, so paraphrase is matched by the
+    # keyword search itself. Off by default; a long background job.
+    "questions": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b",
+                  "per_unit": 3, "sources": ["vault"]},
     "embeddings": {"enabled": False, "url": "http://localhost:11434", "model": "bge-m3",
                    "weight": 30.0, "min_cos": 0.45, "bonus_cos": 0.55, "strong_cos": 0.6, "gap": 0.03, "top": 20},
 }
@@ -90,6 +95,11 @@ def load_config() -> dict:
     langs = [l for l in (cfg.get("languages") or ["en"]) if l in LABELS]
     cfg["languages"] = langs or ["en"]
     return cfg
+
+
+def settings(cfg: dict, key: str, defaults: dict) -> dict:
+    """A config section with its defaults filled in."""
+    return dict(defaults, **(cfg.get(key) or {}))
 
 
 def fold(s: str) -> str:

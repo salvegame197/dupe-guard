@@ -186,6 +186,22 @@ def build_index() -> int:
                     out.write(json.dumps(doc, ensure_ascii=False) + "\n")
                     written += 1
 
+    # questions the worker wrote for each block (brain/questions.py) join the
+    # document as turns of kind "q": the user's question can then match a
+    # stored question word for word
+    try:
+        from brain.questions import by_doc
+        qmap = by_doc()
+    except Exception:
+        qmap = {}
+    if qmap:
+        lines = tmp.read_text(encoding="utf-8").splitlines()
+        with tmp.open("w", encoding="utf-8") as out:
+            for line in lines:
+                doc = json.loads(line)
+                for q in qmap.get(doc["id"], [])[:40]:
+                    doc["turns"].append({"r": "q", "t": q, "f": fold(q)})
+                out.write(json.dumps(doc, ensure_ascii=False) + "\n")
     tmp.replace(INDEX)  # atomic swap: a concurrent search never sees half an index
     size = INDEX.stat().st_size / 1024 / 1024
     print(f"indexed {written} documents in {time.time() - started:.1f}s "
@@ -362,6 +378,7 @@ def score_doc(doc, groups):
         total += 40.0 * (title_hits ** 2) / terms_n
 
     hits = []
+    qhit = 0.0
     for turn in doc["turns"]:
         text = turn["t"]
         # folded at index time: folding every block on every query cost
@@ -376,8 +393,16 @@ def score_doc(doc, groups):
         density = min(occurrences / max(len(text) / 500, 1.0), 4.0)
         weight = 3.0 if turn["r"] in ("u", "v") else 1.0
         coverage = (matched / terms_n) ** 2
+        if turn["r"] == "q":
+            # a stored question matching most of the terms is the subject
+            # distilled, like a title: count it as one
+            if matched >= max(2, (terms_n + 1) // 2):
+                qhit = max(qhit, coverage)
+            continue
         hits.append((weight * coverage * (1.0 + density), matched, occurrences, turn))
 
+    if qhit:
+        total += 40.0 * qhit
     if not hits and not total:
         return None
 
@@ -389,6 +414,7 @@ def score_doc(doc, groups):
     if not total:
         return None
     best = sorted(hits[:5], key=lambda h: (-h[1], -h[2]))
+    doc["_qhit"] = qhit
     return total, [h[3] for h in best[:3]]
 
 
@@ -425,9 +451,9 @@ def search(terms, limit=10, project=None, source=None, no_expand=False, synonyms
                 continue
             total, best = scored
             if not best:
-                # A title-only hit has no snippet to deduplicate on; best[0]
-                # used to raise here and silently take recall down with it.
-                continue
+                best = [t for t in doc["turns"] if t["r"] != "q"][:1]
+                if not best:
+                    continue
             sig = fold(best[0]["t"])[:150]
             if sig in seen_sig:
                 continue

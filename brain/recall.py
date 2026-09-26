@@ -247,7 +247,7 @@ def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14
             curated = r["source"] == "vault" and any(r["id"].startswith(p) for p in trusted)
             # A strong vector match IS the title match that words could not
             # make: "relogio" next to "Apple Watch". That is the whole point.
-            semantic = r.get("cos", 0.0) >= strong_cos
+            semantic = r.get("cos", 0.0) >= strong_cos or r.get("qhit", 0.0) >= 0.5
             if not ((curated and r["score"] >= body_min) or semantic):
                 continue
         picked.append(r)
@@ -273,7 +273,7 @@ def recall(prompt: str, session_id: str, cfg: dict):
     found, _ = ksearch.search(terms, limit=12, synonyms=synonyms)
     table = strength_table()
     results = [{"score": round(weighted(s, d, cfg, terms) * strength_factor(d["id"], table), 1),
-                "source": d["src"], "title": d["title"],
+                "source": d["src"], "title": d["title"], "qhit": d.get("_qhit", 0.0),
                 "project": d["project"], "date": d["date"], "id": d["id"],
                 "snippets": [ksearch.snippet(t["t"], terms) for t in b[:MAX_SNIPPETS]]}
                for s, d, b in found[:12]]
