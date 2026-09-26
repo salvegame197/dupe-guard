@@ -399,13 +399,15 @@ def weighted(score: float, doc: dict, cfg: dict, terms=()) -> float:
         if any(n == title or (len(n) >= 5 and title.startswith(n + "-")) for n in names):
             w *= 2.0
     if doc["src"] == "vault":
-        best = ""
+        # Longest matching folder prefix wins; "vault" is the fallback. This
+        # multiplies into w: assigning here silently dropped the canonical x2.
+        best, factor = "", imp.get("vault", 1.0)
         for prefix, weight in imp.items():
-            if prefix == "vault" or (doc["id"].startswith(prefix) and len(prefix) > len(best)):
-                if prefix != "vault" or not best:
-                    w, best = weight, (best if prefix == "vault" else prefix)
+            if prefix != "vault" and doc["id"].startswith(prefix) and len(prefix) > len(best):
+                best, factor = prefix, weight
+        w *= factor
     else:
-        w = imp.get("transcript", 1.0)
+        w *= imp.get("transcript", 1.0)
     if cfg.get("recency_boost") and doc.get("date"):
         try:
             age = (time.time() - time.mktime(time.strptime(doc["date"], "%Y-%m-%d"))) / 86400

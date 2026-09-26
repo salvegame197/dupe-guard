@@ -655,3 +655,26 @@ class Etapa5(BrainCase):
         self.assertIn("Apple Watch", ctx)
         self.assertIn("generated for 0", self.run_py("questions.py", args=["--run"]))     # incremental
         self.assertIn("self-test", self.run_py("questions.py", args=["--eval", "5"]))
+
+
+class Weighting(unittest.TestCase):
+    """The three factors of `weighted` multiply; none may overwrite another."""
+
+    def w(self, title, doc_id, terms, cfg):
+        sys.path.insert(0, str(ROOT))
+        from brain import recall
+        doc = {"src": "vault", "title": title, "id": doc_id, "date": "2020-01-01"}
+        return recall.weighted(10.0, doc, cfg, terms)
+
+    def test_canonical_page_keeps_its_bonus_under_a_folder_weight(self):
+        cfg = {"importance": {"vault": 1.0, "Projects/": 1.5}, "project_aliases": {}}
+        canonical = self.w("Northwind", "Projects/Northwind.md", ["northwind", "stack"], cfg)
+        sibling = self.w("Northwind Observability", "Projects/Northwind Observability.md", ["northwind", "stack"], cfg)
+        self.assertAlmostEqual(canonical, 10.0 * 2.0 * 1.5)
+        self.assertAlmostEqual(sibling, 10.0 * 1.5)
+
+    def test_longest_folder_prefix_wins_over_the_vault_default(self):
+        cfg = {"importance": {"vault": 1.2, "Web/": 0.8, "Web/Deep/": 0.5}}
+        self.assertAlmostEqual(self.w("x", "Web/Deep/x.md", ["zzz"], cfg), 5.0)
+        self.assertAlmostEqual(self.w("x", "Web/x.md", ["zzz"], cfg), 8.0)
+        self.assertAlmostEqual(self.w("x", "Other/x.md", ["zzz"], cfg), 12.0)
