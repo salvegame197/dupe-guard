@@ -446,14 +446,14 @@ def entity_id(name: str, etype: str, authority: dict):
 
 
 def same_thing(a: str, b: str) -> bool:
-    """"fiat argo", "fiat argo 2024 trekking" and "fiat argo 1.5" are one
-    car: one folded name is the other's prefix at a word boundary, and the
-    shorter has at least two words (so "iphone" does not swallow every
-    iPhone ever mentioned)."""
+    """"fiat argo", "fiat argo 2024 trekking", "argo 2024" and "fiat argo
+    1.5" are one car: the shorter folded name sits whole inside the longer
+    at word boundaries, and has at least two words (so "iphone" does not
+    swallow every iPhone ever mentioned)."""
     if not a or not b or a == b:
         return a == b
     short, long_ = (a, b) if len(a) <= len(b) else (b, a)
-    return len(short.split()) >= 2 and long_.startswith(short + " ")
+    return len(short.split()) >= 2 and (" " + short + " ") in (" " + long_ + " ")
 
 
 def load_candidates():
@@ -572,12 +572,37 @@ def backfill(cfg, limit=0, prefix="", force=False, log=print, workers=1):
 
 
 # ---------------------------------------------------------------- relink
+def merge_cards(authority: dict) -> int:
+    """Two cards of one type whose names (canonical or variant) are the same
+    thing become one: the longer name keeps the card, the rest are kept as
+    variants, pages and ownership are joined. Returns the number merged."""
+    merged = 0
+    for eid in sorted(list(authority), key=lambda i: -len(authority[i].get("canonical", ""))):
+        if eid not in authority:
+            continue
+        e = authority[eid]
+        for oid in list(authority):
+            if oid == eid or oid not in authority or authority[oid].get("type") != e.get("type"):
+                continue
+            o = authority[oid]
+            mine = [fold(e.get("canonical", ""))] + [fold(v) for v in e.get("variants") or []]
+            theirs = [fold(o.get("canonical", ""))] + [fold(v) for v in o.get("variants") or []]
+            if any(same_thing(a, b) for a in mine for b in theirs if a and b):
+                e["variants"] = sorted(set(e.get("variants") or []) | {o.get("canonical", "")} | set(o.get("variants") or []))
+                e["pages"] = list(dict.fromkeys((e.get("pages") or []) + (o.get("pages") or [])))
+                e["owner"] = e.get("owner") or o.get("owner")
+                del authority[oid]
+                merged += 1
+    return merged
+
+
 def relink(cfg, log=print):
     """Point every header at the authority as it is now. Cards get merged
     and renamed after pages were written; an id nobody has any more is
     matched by its slug against the variants, and "user" is never an
     entity, only a subject."""
     authority = load_authority(cfg)
+    merge_cards(authority)
     by_slug = {}
     for e in authority.values():
         for name in [e.get("canonical", "")] + list(e.get("variants") or []):

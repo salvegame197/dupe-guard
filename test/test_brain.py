@@ -810,6 +810,8 @@ class CatalogNames(unittest.TestCase):
         from brain import catalog
         self.assertTrue(catalog.same_thing("fiat argo", "fiat argo 2024 trekking"))
         self.assertTrue(catalog.same_thing("fiat argo 1.5", "fiat argo"))
+        self.assertTrue(catalog.same_thing("argo 2024", "fiat argo 2024 trekking"))
+        self.assertFalse(catalog.same_thing("argo 20", "fiat argo 2024 trekking"))
         self.assertFalse(catalog.same_thing("iphone", "iphone 17 pro max"))
         self.assertFalse(catalog.same_thing("fiat mobi", "fiat argo"))
         auth = {"vehicle-fiat-argo": {"id": "vehicle-fiat-argo", "type": "vehicle", "canonical": "Fiat Argo", "variants": []}}
@@ -833,3 +835,18 @@ class CatalogRelink(BrainCase):
         self.assertEqual(h["claims"], ["user|owns|vehicle-fiat-argo", "vehicle-fiat-argo|status|ok"])
         self.assertEqual(catalog.load_authority(cfg)["vehicle-fiat-argo"]["pages"], ["fuel.md"])
         self.assertEqual([e["id"] for e, _, _ in catalog.resolve("qual é o meu carro?", cfg)], ["vehicle-fiat-argo"])
+
+
+class CatalogMerge(unittest.TestCase):
+    def test_cards_merge_through_variants(self):
+        sys.path.insert(0, str(ROOT))
+        from brain import catalog
+        auth = {"vehicle-fiat-argo": {"id": "vehicle-fiat-argo", "type": "vehicle", "canonical": "Fiat Argo",
+                                       "variants": ["Fiat Argo 2024 Trekking"], "owner": "user", "pages": ["a.md"]},
+                "vehicle-argo-2024": {"id": "vehicle-argo-2024", "type": "vehicle", "canonical": "Argo 2024",
+                                      "variants": [], "owner": None, "pages": ["b.md"]},
+                "place-argo-2024": {"id": "place-argo-2024", "type": "place", "canonical": "Argo 2024", "variants": [], "pages": []}}
+        self.assertEqual(catalog.merge_cards(auth), 1)
+        self.assertEqual(set(auth), {"vehicle-fiat-argo", "place-argo-2024"})
+        self.assertIn("Argo 2024", auth["vehicle-fiat-argo"]["variants"])
+        self.assertEqual(auth["vehicle-fiat-argo"]["pages"], ["a.md", "b.md"])
