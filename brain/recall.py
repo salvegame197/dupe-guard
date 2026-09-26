@@ -17,6 +17,7 @@ Design rules (silence is the default):
 import json
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -221,7 +222,7 @@ def remember(session_id: str, ids: set) -> None:
         pass
 
 
-def pick(results, terms, seen, session_id, aliases=None):
+def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14.0):
     picked = []
     for r in results:
         if r["score"] < MIN_SCORE_TITLE:
@@ -237,7 +238,11 @@ def pick(results, terms, seen, session_id, aliases=None):
         # corpus frequency, so no IDF threshold separates them, while the title
         # is the subject already distilled.
         if not title_hit(terms, r["title"] or "", aliases):
-            continue
+            # A curated note may still qualify on its body alone, with a
+            # higher bar; a chat log or a session may not.
+            curated = r["source"] == "vault" and any(r["id"].startswith(p) for p in trusted)
+            if not (curated and r["score"] >= body_min):
+                continue
         picked.append(r)
         if len(picked) >= MAX_RESULTS:
             break
@@ -255,12 +260,47 @@ def recall(prompt: str, session_id: str, cfg: dict):
     # One term alone is usually too generic, unless it is long and specific.
     if len(terms) < 2 and not (terms and len(terms[0]) >= MIN_SOLO_TERM):
         return terms, 0, []
-    found, _ = ksearch.search(terms, limit=8)
-    results = [{"score": round(s, 1), "source": d["src"], "title": d["title"],
+    aliases = {fold(k): v for k, v in (cfg.get("project_aliases") or {}).items()}
+    synonyms = {t: [aliases[t]] for t in terms if t in aliases}
+    found, _ = ksearch.search(terms, limit=12, synonyms=synonyms)
+    results = [{"score": round(weighted(s, d, cfg, terms), 1), "source": d["src"], "title": d["title"],
                 "project": d["project"], "date": d["date"], "id": d["id"],
                 "snippets": [ksearch.snippet(t["t"], terms) for t in b]}
-               for s, d, b in found[:8]]
-    return terms, len(found), pick(results, terms, already_seen(session_id), session_id, alias_words(cfg))
+               for s, d, b in found[:12]]
+    results.sort(key=lambda x: -x["score"])
+    return terms, len(found), pick(results[:8], terms, already_seen(session_id), session_id, alias_words(cfg),
+                                   tuple(cfg.get("trusted_prefixes") or ()), cfg.get("body_match_min", 14.0))
+
+
+def weighted(score: float, doc: dict, cfg: dict, terms=()) -> float:
+    """Relevance times importance times recency (the three of Generative
+    Agents). Importance comes from config by origin or vault folder prefix,
+    longest prefix wins; recency from the document's date."""
+    imp = cfg.get("importance") or {}
+    w = 1.0
+    # Canonical page: a term that IS the note's name (or the alias that maps
+    # to it). Asking about X when a page called X exists makes that page the
+    # answer's home, and it must beat the many sessions that merely mention X.
+    if doc["src"] == "vault" and terms:
+        title = fold(doc["title"])
+        names = set(terms) | {fold(v) for k, v in (cfg.get("project_aliases") or {}).items() if fold(k) in terms}
+        if any(n == title or (len(n) >= 5 and title.startswith(n + "-")) for n in names):
+            w *= 2.0
+    if doc["src"] == "vault":
+        best = ""
+        for prefix, weight in imp.items():
+            if prefix == "vault" or (doc["id"].startswith(prefix) and len(prefix) > len(best)):
+                if prefix != "vault" or not best:
+                    w, best = weight, (best if prefix == "vault" else prefix)
+    else:
+        w = imp.get("transcript", 1.0)
+    if cfg.get("recency_boost") and doc.get("date"):
+        try:
+            age = (time.time() - time.mktime(time.strptime(doc["date"], "%Y-%m-%d"))) / 86400
+            w *= 1.15 if age <= 7 else 1.08 if age <= 30 else 1.0
+        except (ValueError, OverflowError):
+            pass
+    return score * w
 
 
 def main() -> int:

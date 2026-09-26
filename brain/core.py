@@ -38,6 +38,20 @@ DEFAULTS = {
     # None = automatic: every top-level folder of the vault. Otherwise a list
     # of {"title", "path", "depth", "limit", "inline"}.
     "context_sections": None,
+    # Importance by origin (Generative Agents weigh relevance, recency and
+    # importance; a keyword score alone has only the first). Keys are "vault"
+    # folder prefixes or "transcript"; a note distilled by hand outranks a raw
+    # session, and a project note outranks a chat log. Multipliers on the score.
+    "importance": {"vault": 1.2, "transcript": 1.0},
+    # Recent pages get a small boost: 1.15 within a week, 1.08 within a month.
+    "recency_boost": True,
+    # Vault folders whose pages may be recalled on a strong BODY match even
+    # when no search term is in the title. The title filter exists to keep
+    # chat logs from matching on a stray word; curated project notes hold the
+    # answer in a section, under a title that names the project, not the
+    # question. Empty = title match required everywhere.
+    "trusted_prefixes": [],
+    "body_match_min": 14.0,
     "distill_model": "sonnet",
     "distill_samples": 3,
 }

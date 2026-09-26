@@ -122,18 +122,34 @@ def index_vault(path: Path, root: Path):
         raw = path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return None
-    body = clean(re.sub(r"^---\n.*?\n---\n", "", raw, flags=re.S))
-    if len(body) < 50:
+    body = re.sub(r"^---\n.*?\n---\n", "", raw, flags=re.S)
+    if len(clean(body)) < 50:
+        return None
+    # One turn per SECTION, not one per page. A page indexed as a single blob
+    # was cut at MAX_TURN_CHARS * 4 (long project notes lost their tail) and
+    # scored by density, which punishes length: a two-line chat outscored the
+    # note that actually held the answer. Sections keep the density honest
+    # and the snippet lands on the part that matched.
+    turns = []
+    for chunk in re.split(r"(?=^#{1,3} )", body, flags=re.M):
+        text = clean(chunk)
+        if len(text) >= 40:
+            turns.append({"r": "v", "t": text[:MAX_TURN_CHARS * 2]})
+    if not turns:
         return None
     rel = path.relative_to(root)
+    try:
+        date = time.strftime("%Y-%m-%d", time.localtime(path.stat().st_mtime))
+    except OSError:
+        date = None
     return {
         "src": "vault",
         "id": str(rel),
         "title": path.stem,
         "project": str(rel.parent) if rel.parent != Path(".") else "vault",
         "branch": None,
-        "date": None,
-        "turns": [{"r": "v", "t": body[: MAX_TURN_CHARS * 4]}],
+        "date": date,
+        "turns": turns,
     }
 
 
@@ -379,9 +395,12 @@ def snippet(text, terms):
     return out
 
 
-def search(terms, limit=10, project=None, source=None, no_expand=False):
-    """(results, expanded) with results = [(score, doc, best_turns)], ranked."""
+def search(terms, limit=10, project=None, source=None, no_expand=False, synonyms=None):
+    """(results, expanded) with results = [(score, doc, best_turns)], ranked.
+    `synonyms` maps a term to phrases that count as matching it (a repo folder
+    to the title of its note, for instance); they join the term's group."""
     docs = load_index()
+    synonyms = synonyms or {}
 
     def run(groups):
         found, seen_sig = [], set()
@@ -406,7 +425,7 @@ def search(terms, limit=10, project=None, source=None, no_expand=False):
         found.sort(key=lambda r: -r[0])
         return found
 
-    results = run([[t] for t in terms])
+    results = run([[t] + [fold(x) for x in synonyms.get(t, [])] for t in terms])
     expanded = False
     # Expansion is CONSERVATIVE: only when the literal search disappoints.
     # Statistical synonyms are right for some terms and wrong for others;
