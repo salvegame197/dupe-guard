@@ -802,3 +802,16 @@ class Catalog(BrainCase):
                                            "title_assigned: false\nsummary: s\n---\n" + "x" * 200000)
         rows, problems, _ = catalog.rebuild(cfg)
         self.assertEqual([r["id"] for r in rows], ["big.md"])
+
+
+class CatalogNames(unittest.TestCase):
+    def test_near_duplicate_names_are_one_thing(self):
+        sys.path.insert(0, str(ROOT))
+        from brain import catalog
+        self.assertTrue(catalog.same_thing("fiat argo", "fiat argo 2024 trekking"))
+        self.assertTrue(catalog.same_thing("fiat argo 1.5", "fiat argo"))
+        self.assertFalse(catalog.same_thing("iphone", "iphone 17 pro max"))
+        self.assertFalse(catalog.same_thing("fiat mobi", "fiat argo"))
+        auth = {"vehicle-fiat-argo": {"id": "vehicle-fiat-argo", "type": "vehicle", "canonical": "Fiat Argo", "variants": []}}
+        self.assertEqual(catalog.entity_id("Fiat Argo 2024 Trekking", "vehicle", auth), "vehicle-fiat-argo")
+        self.assertIsNone(catalog.entity_id("Fiat Mobi", "vehicle", auth))

@@ -57,6 +57,24 @@ TYPES = {
 PREDICATES = ("owns", "uses", "is_a", "located_in", "works_at", "stack", "status",
               "decided", "price", "when", "part_of", "related", "compared", "sold", "bought")
 USER = "user"
+GENERIC = {n for by in TYPES.values() for ns in by.values() for n in ns} | {"produto", "product", "item", "coisa", "thing"}
+# "device" is where the model puts anything with a plug; the everyday noun
+# is more specific. The name usually says which.
+REFINE = (("watch", (r"\bwatch\b", r"\brelogio\b", r"\bgarmin\b")),
+          ("camera", (r"\bcam", r"insta360", r"gopro", r"osmo", r"\bcamera\b")),
+          ("phone", (r"iphone", r"galaxy", r"\bpixel\b", r"celular", r"\bphone\b")),
+          ("computer", (r"\bpc\b", r"macbook", r"notebook", r"desktop", r"\blaptop\b", r"\bmac\b")),
+          ("vehicle", (r"\bhonda\b", r"\btoyota\b", r"\bfiat\b", r"\bvw\b", r"\bram\b", r"\bmoto\b")))
+
+
+def refine_type(name: str, etype: str) -> str:
+    if etype not in ("device", "product", "other"):
+        return etype
+    f = fold(name)
+    for t, pats in REFINE:
+        if any(re.search(pat, f) for pat in pats):
+            return t
+    return etype
 
 PROMPTS = {
     "pt": """Leia o texto e responda SOMENTE com um JSON neste formato, sem comentario:
@@ -339,8 +357,11 @@ def resolve(prompt: str, cfg: dict, authority=None, catalog=None):
         for t in asked_types:
             of_type = [e for e in authority.values() if e.get("type") == t]
             mine = [e for e in of_type if e.get("owner") == USER]
-            chosen = mine if (mine and possessive) else (mine or of_type if possessive else [])
-            hits += [e["id"] for e in chosen]
+            # "my watch" and "the watch I sold" both mean the user's, when
+            # there is one; only without any owned thing does the type's
+            # whole shelf come, and then only when asked possessively.
+            chosen = mine or (of_type if possessive else [])
+            hits += [e["id"] for e in chosen[:3]]
     seen, out = set(), []
     by_entity = defaultdict(list)
     for row in catalog:
@@ -353,8 +374,15 @@ def resolve(prompt: str, cfg: dict, authority=None, catalog=None):
         e = authority[eid]
         pages = by_entity.get(eid) or [{"id": p, "title": Path(p).stem, "claims": [], "summary": ""}
                                         for p in e.get("pages") or []]
-        claims = [c for row in pages for c in row.get("claims") or [] if eid in c or e["canonical"] in c]
-        out.append((e, pages, claims))
+        # The page NAMED after the thing is its home; otherwise the one that
+        # says the most about it. One card, one page: the keyword index
+        # keeps its say on the rest.
+        canon = fold(e.get("canonical", ""))
+        pages = sorted(pages, key=lambda r: (fold(r["title"]) != canon,
+                                             -sum(1 for c in r.get("claims") or [] if eid in c),
+                                             r.get("kind") == "conversation"))
+        claims = [c for row in pages[:1] for c in row.get("claims") or [] if eid in c or e["canonical"] in c]
+        out.append((e, pages[:1], claims))
     return out
 
 
@@ -406,13 +434,25 @@ def entity_id(name: str, etype: str, authority: dict):
     f = fold(name)
     same_type, any_type = None, None
     for e in authority.values():
-        if fold(e.get("canonical", "")) == f or f in {fold(v) for v in e.get("variants") or []}:
+        names = {fold(e.get("canonical", ""))} | {fold(v) for v in e.get("variants") or []}
+        if f in names or (e.get("type") == etype and any(same_thing(f, n) for n in names)):
             if e.get("type") == etype:
                 same_type = e["id"]
             any_type = any_type or e["id"]
     # The name identifies the thing; the type only describes it. Two runs
     # naming "Northwind" a project and a product must not make two cards.
     return same_type or any_type
+
+
+def same_thing(a: str, b: str) -> bool:
+    """"fiat argo", "fiat argo 2024 trekking" and "fiat argo 1.5" are one
+    car: one folded name is the other's prefix at a word boundary, and the
+    shorter has at least two words (so "iphone" does not swallow every
+    iPhone ever mentioned)."""
+    if not a or not b or a == b:
+        return a == b
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    return len(short.split()) >= 2 and long_.startswith(short + " ")
 
 
 def load_candidates():
@@ -467,6 +507,9 @@ def backfill(cfg, limit=0, prefix="", force=False, log=print, workers=1):
             if not isinstance(e, dict) or not e.get("name") or e.get("type") not in TYPES:
                 continue
             name, etype = str(e["name"]).strip()[:80], e["type"]
+            if fold(name) in GENERIC or len(fold(name)) < 3:
+                continue                  # "carro" is a type, not a thing
+            etype = refine_type(name, etype)
             eid = entity_id(name, etype, authority)
             if eid is None:
                 key = f"{etype}:{slug(name)}"

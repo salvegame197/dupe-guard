@@ -84,8 +84,10 @@ def summary(rows):
 
 def main() -> int:
     cfg = load_config()
+    page = sys.argv[sys.argv.index("--page") + 1] if "--page" in sys.argv else None
+    tag = "blind-" if page else ""
     if "--diff" in sys.argv:
-        files = sorted(RESULTS.glob("*.json"))[-2:]
+        files = sorted(f for f in RESULTS.glob("*.json") if f.name.startswith("blind-") == bool(page))[-2:]
         if len(files) < 2:
             print("need two saved runs to diff")
             return 1
@@ -101,8 +103,6 @@ def main() -> int:
                 print(f"  #{r['n']:<3} {before} -> {r['status']}   {r['question'][:60]}")
         return 0
 
-    # --page "Other.md": a second question set, kept blind (never tuned on).
-    page = sys.argv[sys.argv.index("--page") + 1] if "--page" in sys.argv else None
     rows = run(cfg, page)
     if not rows:
         print(f"no questions found in {cfg['vault'] / (page or cfg['truth_page'])}")
@@ -115,7 +115,7 @@ def main() -> int:
     print(f"\nhit {s['hit']}  miss {s['miss']}  silent {s['silent']}  of {s['total']}  ({s['hit_pct']}% hit)")
     if "--save" in sys.argv:
         RESULTS.mkdir(parents=True, exist_ok=True)
-        f = RESULTS / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
+        f = RESULTS / f"{tag}{time.strftime('%Y%m%d-%H%M%S')}.json"
         f.write_text(json.dumps({"summary": s, "rows": rows}, ensure_ascii=False, indent=1))
         print(f"saved: {f}")
     return 0

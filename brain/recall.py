@@ -277,12 +277,16 @@ def recall(prompt: str, session_id: str, cfg: dict):
                 "project": d["project"], "date": d["date"], "id": d["id"],
                 "snippets": [ksearch.snippet(t["t"], terms) for t in b[:MAX_SNIPPETS]]}
                for s, d, b in found[:12]]
-    results = by_authority(results, prompt, cfg) + results
     results = hybrid(results, prompt, terms, cfg, table)
     results.sort(key=lambda x: -x["score"])
     picked = pick(results[:8], terms, already_seen(session_id), session_id, alias_words(cfg),
                   tuple(cfg.get("trusted_prefixes") or ()), cfg.get("body_match_min", 14.0),
                   (cfg.get("embeddings") or {}).get("strong_cos", 0.6))
+    # The card comes on top of what the words found, never in its place:
+    # the words know the ASPECT asked ("leather" of the car), the card knows
+    # the THING (which car). Measured: replacing cost three blind answers.
+    card = [c for c in by_authority(results, prompt, cfg) if c["id"] not in already_seen(session_id)][:1]
+    picked = card + [r for r in picked if r["id"] not in {c["id"] for c in card}]
     rejected = [x for x in results[:8] if x not in picked]
     log_decision(session_id, prompt, terms, picked, rejected,
                  "" if picked else ("no title match above threshold" if results else "nothing found"))
@@ -302,8 +306,8 @@ def by_authority(results, prompt, cfg):
     known = {r["id"] for r in results}
     out = []
     for e, pages, claims in catalog.resolve(prompt, cfg):
-        for page in pages[:2]:
-            if page["id"] in known:
+        for page in pages[:1]:
+            if page["id"] in known or len(out) >= 2:
                 continue
             known.add(page["id"])
             facts = [c.replace("|", " ") for c in (page.get("claims") or [])][:4]
