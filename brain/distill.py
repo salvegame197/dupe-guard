@@ -311,13 +311,21 @@ def stamp_date(block: str, day: str) -> str:
     return "\n".join(lines)
 
 
-def ask(prompt: str, model: str):
-    """(ok, stdout or error). CLAUDE* variables are dropped so a claude
-    started from inside a session does not think it is that session."""
+def child_env() -> dict:
+    """Environment for the `claude -p` we start. CLAUDE* variables are
+    dropped so it does not think it is the session that spawned it, and the
+    hooks are switched off: they are for the user's sessions, not for a
+    worker talking to the model."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
+    env["DUPE_GUARD_DISABLE"] = "1"
+    return env
+
+
+def ask(prompt: str, model: str):
+    """(ok, stdout or error)."""
     try:
         r = subprocess.run([CLAUDE, "-p", "--model", model], input=prompt,
-                           capture_output=True, text=True, timeout=TIMEOUT, env=env)
+                           capture_output=True, text=True, timeout=TIMEOUT, env=child_env())
     except (subprocess.SubprocessError, OSError) as e:
         return False, str(e)
     if r.returncode != 0:

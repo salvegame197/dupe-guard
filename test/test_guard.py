@@ -97,6 +97,13 @@ class GuardTest(unittest.TestCase):
         # and end to end: a clone written into a test file stays silent
         self.assertIsNone(self.run_guard(self.payload(CLONE, path="src/payments.test.js")))
 
+    def test_disabled_by_environment(self):
+        env = dict(os.environ, DUPE_GUARD_HOME=str(self.home), DUPE_GUARD_DISABLE="1")
+        r = subprocess.run([sys.executable, str(GUARD)], input=json.dumps(self.payload(CLONE)),
+                           capture_output=True, text=True, env=env, timeout=20)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "")
+
     def test_ignores_other_tools(self):
         self.assertIsNone(self.run_guard(self.payload(CLONE, tool="Read")))
 

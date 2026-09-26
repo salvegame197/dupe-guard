@@ -255,6 +255,8 @@ def analyse(fpath, code, lang, already, root, st, warned, csearch, after):
 
 
 def main() -> int:
+    if os.environ.get("DUPE_GUARD_DISABLE") == "1":
+        return 0                  # a worker's child session, not the user's
     try:
         payload = json.load(sys.stdin)
     except Exception:

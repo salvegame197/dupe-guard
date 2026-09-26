@@ -678,3 +678,28 @@ class Weighting(unittest.TestCase):
         self.assertAlmostEqual(self.w("x", "Web/Deep/x.md", ["zzz"], cfg), 5.0)
         self.assertAlmostEqual(self.w("x", "Web/x.md", ["zzz"], cfg), 8.0)
         self.assertAlmostEqual(self.w("x", "Other/x.md", ["zzz"], cfg), 12.0)
+
+
+class WorkerChild(unittest.TestCase):
+    """A `claude -p` started by the distill worker runs with the hooks off."""
+
+    def test_child_env_drops_claude_vars_and_disables_hooks(self):
+        sys.path.insert(0, str(ROOT))
+        from brain import distill
+        os.environ["CLAUDE_SESSION_TEST"] = "x"
+        try:
+            env = distill.child_env()
+        finally:
+            del os.environ["CLAUDE_SESSION_TEST"]
+        self.assertEqual(env.get("DUPE_GUARD_DISABLE"), "1")
+        self.assertFalse([k for k in env if k.startswith("CLAUDE")])
+
+    def test_disable_wins_over_enable(self):
+        sys.path.insert(0, str(ROOT))
+        from brain import core
+        old = dict(os.environ)
+        os.environ.update({"DUPE_GUARD_BRAIN": "1", "DUPE_GUARD_DISABLE": "1"})
+        try:
+            self.assertFalse(core.load_config()["enabled"])
+        finally:
+            os.environ.clear(); os.environ.update(old)

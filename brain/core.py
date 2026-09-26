@@ -90,6 +90,11 @@ def load_config() -> dict:
         cfg["vault"] = os.environ["DUPE_GUARD_VAULT"]
     if os.environ.get("DUPE_GUARD_TRANSCRIPTS"):
         cfg["transcripts"] = os.environ["DUPE_GUARD_TRANSCRIPTS"]
+    # Set by the distill worker for the `claude -p` it starts: that child
+    # session must not run the live hooks (it used to inject recall into its
+    # own prompt and write into the decision log).
+    if os.environ.get("DUPE_GUARD_DISABLE") == "1":
+        cfg["enabled"] = False
     cfg["vault"] = Path(os.path.expanduser(cfg["vault"]))
     cfg["transcripts"] = Path(os.path.expanduser(cfg["transcripts"]))
     langs = [l for l in (cfg.get("languages") or ["en"]) if l in LABELS]
