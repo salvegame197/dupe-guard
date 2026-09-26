@@ -56,6 +56,10 @@ def main() -> int:
     try:
         subprocess.run([sys.executable, str(KSEARCH), "--reindex"],
                        capture_output=True, timeout=120)
+        # Memory strength rides along: what was injected and opened since
+        # the last pass changes which pages recall should trust.
+        subprocess.run([sys.executable, str(KSEARCH.parent / "hit_rate.py"), "--strength"],
+                       capture_output=True, timeout=120)
         # The stamp only advances after finishing: if the reindex fails or is
         # killed, the next stop tries again instead of waiting 15 minutes.
         STAMP.write_text(str(time.time()))

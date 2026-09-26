@@ -25,6 +25,10 @@ from brain.core import DATA, fold, hook_output, labels, load_config   # noqa: E4
 
 STATE_DIR = DATA / "recall-state"
 MANUAL_STOPWORDS = DATA / "recall-stopwords.json"
+STRENGTH = DATA / "recall-strength.json"      # written by hit_rate.py --strength
+LOG = DATA / "recall-log.jsonl"
+MAX_SNIPPETS = 1           # one snippet per page keeps an injection near 700 chars
+MAX_LOG_LINES = 5000
 
 MIN_PROMPT_CHARS = 25      # below this it is an acknowledgement, not a question
 MIN_SCORE_TITLE = 7.0      # with the TITLE required to match (see pick), a
@@ -259,17 +263,72 @@ def recall(prompt: str, session_id: str, cfg: dict):
     terms = terms_from(prompt, cfg["languages"])
     # One term alone is usually too generic, unless it is long and specific.
     if len(terms) < 2 and not (terms and len(terms[0]) >= MIN_SOLO_TERM):
+        log_decision(session_id, prompt, terms, [], [], "too few terms")
         return terms, 0, []
     aliases = {fold(k): v for k, v in (cfg.get("project_aliases") or {}).items()}
     synonyms = {t: [aliases[t]] for t in terms if t in aliases}
     found, _ = ksearch.search(terms, limit=12, synonyms=synonyms)
-    results = [{"score": round(weighted(s, d, cfg, terms), 1), "source": d["src"], "title": d["title"],
+    table = strength_table()
+    results = [{"score": round(weighted(s, d, cfg, terms) * strength_factor(d["id"], table), 1),
+                "source": d["src"], "title": d["title"],
                 "project": d["project"], "date": d["date"], "id": d["id"],
-                "snippets": [ksearch.snippet(t["t"], terms) for t in b]}
+                "snippets": [ksearch.snippet(t["t"], terms) for t in b[:MAX_SNIPPETS]]}
                for s, d, b in found[:12]]
     results.sort(key=lambda x: -x["score"])
-    return terms, len(found), pick(results[:8], terms, already_seen(session_id), session_id, alias_words(cfg),
-                                   tuple(cfg.get("trusted_prefixes") or ()), cfg.get("body_match_min", 14.0))
+    picked = pick(results[:8], terms, already_seen(session_id), session_id, alias_words(cfg),
+                  tuple(cfg.get("trusted_prefixes") or ()), cfg.get("body_match_min", 14.0))
+    rejected = [x for x in results[:8] if x not in picked]
+    log_decision(session_id, prompt, terms, picked, rejected,
+                 "" if picked else ("no title match above threshold" if results else "nothing found"))
+    return terms, len(found), picked
+
+
+def strength_table() -> dict:
+    try:
+        return json.loads(STRENGTH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def strength_factor(doc_id: str, table: dict) -> float:
+    """
+    Memory strength, Ebbinghaus-style but fed by evidence: a page the model
+    opened after it was injected gets stronger; a page injected many times
+    and never opened fades. hit_rate.py --strength derives the table from
+    the transcripts; this only reads it.
+    """
+    s = table.get(doc_id)
+    if not s:
+        return 1.0
+    inj, opened = s.get("injected", 0), s.get("opened", 0)
+    if opened:
+        return min(1.0 + 0.15 * opened, 1.6)
+    if inj >= 5:
+        return 0.6
+    if inj >= 3:
+        return 0.8
+    return 1.0
+
+
+def log_decision(session_id: str, prompt: str, terms, picked, rejected, reason: str):
+    """One line per decision, injected or not, with why. It is what lets a
+    bad injection be explained a week later instead of guessed at."""
+    if not session_id:
+        return              # evaluation runs (truth.py) pass no session
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        if LOG.exists() and LOG.stat().st_size > MAX_LOG_LINES * 300:
+            lines = LOG.read_text(encoding="utf-8").splitlines()[-MAX_LOG_LINES // 2:]
+            LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        with LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": int(time.time()), "session": session_id[:8], "prompt": prompt[:80],
+                "terms": terms, "decision": "inject" if picked else "silent", "reason": reason,
+                "picked": [(p["title"][:60], p["score"]) for p in picked],
+                "rejected": [(p["title"][:60], p["score"]) for p in rejected[:3]],
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
 
 
 def weighted(score: float, doc: dict, cfg: dict, terms=()) -> float:
@@ -324,7 +383,7 @@ def main() -> int:
         origin = "vault" if r["source"] == "vault" else (r.get("project") or "?")
         when = f", {r['date']}" if r.get("date") else ""
         lines.append(f"**{r['title']}** ({origin}{when})")
-        for s in r.get("snippets", [])[:2]:
+        for s in r.get("snippets", [])[:MAX_SNIPPETS]:
             lines.append(f"  - {s}")
         lines.append("")
     lines.append(L["recall_footer"] + f" `python3 {Path(__file__).parent / 'ksearch.py'} <terms>`")

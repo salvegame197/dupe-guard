@@ -141,6 +141,47 @@ def analyse(path, acc):
             r["chars"] += len(c)
 
 
+def strength(files):
+    """{doc_id: {injected, opened}} from every recall injection: which pages
+    came back, and whether the model opened them in that turn. Ids match the
+    search index (vault: path inside the vault; transcript: session id)."""
+    table = {}
+    for path in files:
+        try:
+            ev = events(path)
+        except (OSError, ValueError):
+            continue
+        for i, (ts, kind, d) in enumerate(ev):
+            if kind != "recall":
+                continue
+            titles = {t.strip(): t.strip().lower() for t in TITLE.findall(d["text"])}
+            opened = set()
+            for _, k2, d2 in ev[i + 1:]:
+                if k2 == "prompt":
+                    break
+                if k2 == "tool" and d2["name"] == "Read":
+                    opened.add(os.path.splitext(os.path.basename(d2["path"]))[0].lower())
+            for title, low in titles.items():
+                s = table.setdefault(title, {"injected": 0, "opened": 0})
+                s["injected"] += 1
+                s["opened"] += low in opened
+    return table
+
+
+def write_strength(files):
+    """Keyed by index id, so recall can look it up without a title search."""
+    from brain import ksearch
+    by_title = {}
+    if ksearch.INDEX.exists():
+        for doc in ksearch.load_index():
+            by_title.setdefault(doc["title"], doc["id"])
+    table = strength(files)
+    out = {by_title[t]: s for t, s in table.items() if t in by_title}
+    ksearch.DATA.mkdir(parents=True, exist_ok=True)
+    (ksearch.DATA / "recall-strength.json").write_text(json.dumps(out, ensure_ascii=False))
+    return out
+
+
 def pct(a, b):
     return f"{100 * a / b:5.1f}%" if b else "   —  "
 
@@ -154,6 +195,11 @@ def main():
             analyse(f, acc)
         except (OSError, ValueError):
             continue
+    if "--strength" in sys.argv:
+        out = write_strength(files)
+        faded = sum(1 for s in out.values() if s["injected"] >= 3 and not s["opened"])
+        print(f"strength table: {len(out)} pages, {faded} fading (injected 3+ times, never opened)")
+        return 0
     if "--json" in sys.argv:
         print(json.dumps({"transcripts": len(files), **acc}))
         return 0

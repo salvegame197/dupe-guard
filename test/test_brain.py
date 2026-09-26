@@ -228,6 +228,22 @@ class Brain(unittest.TestCase):
         self.assertFalse(title_hit(["eua"], "Europe and beyond"))
         self.assertFalse(title_hit(["api-producer"], "API of the consumer"))
 
+    def test_recall_logs_every_decision_and_fades_unopened_pages(self):
+        sys.path.insert(0, str(ROOT))
+        from brain.recall import strength_factor
+        self.assertEqual(strength_factor("x", {}), 1.0)
+        self.assertLess(strength_factor("x", {"x": {"injected": 5, "opened": 0}}), 1.0)
+        self.assertGreater(strength_factor("x", {"x": {"injected": 5, "opened": 2}}), 1.0)
+        self.reindex()
+        self.run_py("recall.py", {"prompt": "how should exponential backoff work for invoice retries", "session_id": "lg1"})
+        self.run_py("recall.py", {"prompt": "ok go ahead, nothing to see here really", "session_id": "lg1"})
+        log = [json.loads(l) for l in (self.home / "brain" / "recall-log.jsonl").read_text().splitlines()]
+        self.assertEqual([d["decision"] for d in log], ["inject", "silent"])
+        self.assertTrue(log[1]["reason"])
+        # hit_rate --strength writes the table recall reads
+        self.assertIn("strength table", self.run_py("hit_rate.py", args=["--strength"]))
+        self.assertTrue((self.home / "brain" / "recall-strength.json").exists())
+
     # ------------------------------------------------------------------- truth
 
     def test_truth_scores_hit_miss_and_silent_apart(self):
