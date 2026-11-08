@@ -846,8 +846,8 @@ class CatalogRelink(BrainCase):
         cfg = core.load_config(); cfg.update({"vault": self.vault, "languages": ["pt"], "catalog": {"enabled": True}})
         catalog.save_authority(cfg, {"vehicle-fiat-argo": {"id": "vehicle-fiat-argo", "type": "vehicle", "canonical": "Fiat Argo",
                                                             "variants": ["Fiat Argo 2024 Trekking"], "owner": "user", "pages": ["fuel.md", "gone.md"]}})
-        (self.vault / "fuel.md").write_text("---\nschema: 1\nkind: conversation\nentities: [person-user, vehicle-fiat-argo-2024-touring]\n"
-                                            "claims: [\"person-user|owns|vehicle-fiat-argo-2024-touring\", \"vehicle-fiat-argo-2024-touring|status|ok\"]\n"
+        (self.vault / "fuel.md").write_text("---\nschema: 1\nkind: conversation\nentities: [person-user, vehicle-fiat-argo-2024-trekking]\n"
+                                            "claims: [\"person-user|owns|vehicle-fiat-argo-2024-trekking\", \"vehicle-fiat-argo-2024-trekking|status|ok\"]\n"
                                             "title_assigned: true\nsummary: s\n---\n\nbody\n")
         self.assertEqual(catalog.relink(cfg, log=lambda *a: None), 1)
         h = catalog.read_header_only(self.vault / "fuel.md")

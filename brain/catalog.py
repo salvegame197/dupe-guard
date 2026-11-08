@@ -64,7 +64,10 @@ PREDICATES = ("owns", "uses", "is_a", "located_in", "works_at", "stack", "status
               "decided", "price", "when", "part_of", "related", "compared", "sold", "bought")
 USER = "user"
 GENERIC = ({n for by in TYPES.values() for ns in by.values() for n in ns}
-           | {"produto", "product", "item", "coisa", "thing", "user", "usuario", "usuário", "eu", "owner", "me", "i"})
+           | {"produto", "product", "item", "coisa", "thing", "user", "usuario", "usuário", "eu", "me", "i"})
+# Words that mean the vault's owner. Their own name(s) come from the config
+# (`catalog.user_names`), never from the code.
+USER_WORDS = {"eu", "i", "me", "user", "usuario", "usuário"}
 # "device" is where the model puts anything with a plug; the everyday noun
 # is more specific. The name usually says which.
 REFINE = (("watch", (r"\bwatch\b", r"\brelogio\b", r"\bgarmin\b")),
@@ -112,7 +115,18 @@ MAX_CHARS = 3500
 
 def cfg_settings(cfg):
     return settings(cfg, "catalog", {"enabled": False, "writer": "ollama", "url": "http://localhost:11434",
-                                     "model": "qwen2.5:3b", "claude_model": "haiku", "promote_at": 2})
+                                     "model": "qwen2.5:3b", "claude_model": "haiku", "promote_at": 2,
+                                     "user_names": []})
+
+
+def user_names(cfg) -> set:
+    """The owner's own names, folded: "Dono" in a claim subject or an entity
+    name means the user, and `person-dono` is the user's own card."""
+    return {fold(n) for n in (cfg_settings(cfg).get("user_names") or []) if n}
+
+
+def is_user(name: str, cfg) -> bool:
+    return fold(name) in USER_WORDS or fold(name) in user_names(cfg)
 
 
 # ---------------------------------------------------------------- frontmatter
@@ -543,7 +557,7 @@ def backfill(cfg, limit=0, prefix="", force=False, log=print, workers=1):
             if not isinstance(e, dict) or not e.get("name") or e.get("type") not in TYPES:
                 continue
             name, etype = str(e["name"]).strip()[:80], e["type"]
-            if fold(name) in GENERIC or len(fold(name)) < 3:
+            if fold(name) in GENERIC or fold(name) in user_names(cfg) or len(fold(name)) < 3:
                 continue                  # "carro" is a type, not a thing
             etype = refine_type(name, etype)
             eid = entity_id(name, etype, authority)
@@ -563,7 +577,7 @@ def backfill(cfg, limit=0, prefix="", force=False, log=print, workers=1):
             sub, pred, obj = (str(x.get("name", "") if isinstance(x, dict) else x).strip() for x in c)
             if pred not in PREDICATES or not sub or not obj:
                 continue
-            if fold(sub) in ("eu", "owner", "i", "me", "user", "usuario"):
+            if is_user(sub, cfg):
                 sub = USER
             raw_claims.append((sub, pred, obj))
             key = names.get(fold(obj), (None, None))[0]
@@ -642,7 +656,7 @@ def relink(cfg, log=print):
     for e in authority.values():
         for name in [e.get("canonical", "")] + list(e.get("variants") or []):
             by_slug.setdefault(slug(name), e["id"])
-    user_ids = {f"{t}-user" for t in TYPES} | {"person-owner", "user"}
+    user_ids = {f"{t}-user" for t in TYPES} | {"user"} | {f"person-{slug(n)}" for n in user_names(cfg)}
 
     def map_id(eid):
         if eid in authority:

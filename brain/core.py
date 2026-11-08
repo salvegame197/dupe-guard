@@ -108,7 +108,8 @@ DEFAULTS = {
     "questions": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b",
                   "per_unit": 3, "sources": ["vault"]},
     # Entity catalog compiled from page headers (brain/catalog.py).
-    "catalog": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b", "promote_at": 2},
+    "catalog": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b", "promote_at": 2,
+                "user_names": []},
     "embeddings": {"enabled": False, "url": "http://localhost:11434", "model": "bge-m3",
                    "weight": 30.0, "min_cos": 0.45, "bonus_cos": 0.55, "strong_cos": 0.6, "gap": 0.03, "top": 20},
 }

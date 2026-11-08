@@ -313,7 +313,7 @@ class Writing(Piece4Case):
         note = (mem / "aprendido-client-app.md").read_text()
         bullets = [l for l in note.splitlines() if l.startswith("- ")]
         self.assertEqual(len(bullets), 2)
-        self.assertIn("producer do request", bullets[0])
+        self.assertIn("tenant do request", bullets[0])
         self.assertEqual((mem / "MEMORY.md").read_text().count("aprendido-client-app.md"), 1)
 
     def test_self_recorded_and_disabled_write_nothing(self):

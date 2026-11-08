@@ -364,3 +364,17 @@ class ProposalTargets(ReviewCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CatalogUserNames(unittest.TestCase):
+    """The owner's own names come from `catalog.user_names` in the config,
+    never from the code: "eu"/"I" always mean the user, a proper name only
+    when the config says so."""
+
+    def test_is_user_and_card_id(self):
+        from brain import catalog
+        cfg = {"catalog": {"user_names": ["Dono"]}}
+        self.assertTrue(catalog.is_user("eu", {}))
+        self.assertFalse(catalog.is_user("Dono", {}))
+        self.assertTrue(catalog.is_user("dono", cfg))
+        self.assertEqual(catalog.user_names(cfg), {"dono"})

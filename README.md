@@ -326,7 +326,7 @@ DUPE_GUARD_HOME=/tmp/qg-demo python3 guard.py < examples/payload.json
 python3 -m unittest discover -s test -v
 ```
 
-149 tests in all. The hook has sixteen end-to-end cases that run `guard.py`
+150 tests in all. The hook has sixteen end-to-end cases that run `guard.py`
 the way Claude Code does, JSON on stdin, against a throwaway git repo: clone
 detected, silence on unrelated code, silence on garbage input, other tools
 ignored, no repeated warning in a session, silence outside git, old state
