@@ -17,11 +17,22 @@ saves after every block, so an interrupted run resumes and a partial run is
 already useful. Blocks are keyed by content hash: unchanged text is never
 re-read.
 
+OFFLINE since 2026-11-08. The store is not part of the production index any
+more and the automatic reindex never reads it: it was written once (26/09),
+never refreshed, and added 2 MB to what every prompt loads. To run the
+self-test, put the questions in the index on purpose, evaluate, and let the
+next automatic reindex (or a plain --reindex) drop them again:
+
+    python3 brain/ksearch.py --reindex --with-questions
+    python3 brain/questions.py --eval 100
+    python3 brain/ksearch.py --reindex
+
 Usage:
     questions.py --run [--limit N] [--prefix Folder/]   generate for blocks that lack questions
     questions.py --stats
     questions.py --eval [N]            ask N stored questions back to recall:
-                                       does the block come back? (self-test)
+                                       does the block come back? (self-test;
+                                       needs --reindex --with-questions first)
 """
 import hashlib
 import json
@@ -148,7 +159,11 @@ def evaluate(cfg, n=100):
     """Self-test: ask stored questions back to recall; the block's document
     should be among what comes back. The user's thirty questions are the
     anchor; this is the trend, nightly, without anyone writing questions."""
-    from brain import recall
+    from brain import ksearch, recall
+    if not any(t.get("r") == "q" for d in ksearch.load_index() for t in d["turns"]):
+        print("the index holds no stored questions; run first: ksearch.py --reindex --with-questions",
+              file=sys.stderr)
+        return 1
     store = list(load_store().values())
     random.seed(int(time.time()) // 86400)         # a fresh sample per day, stable within it
     sample = [d for d in random.sample(store, min(n, len(store))) if d.get("questions")]

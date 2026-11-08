@@ -143,9 +143,10 @@ the last two. hit, miss and silent are counted apart on purpose.
 ## Proposals
 
 At the end of each session the harness proposes changes to itself from
-evidence: a recall page nobody read makes its matching word a **stopword**
-candidate; a correction the model admitted becomes a draft **convention** for
-the repo. They go to the proposals page with checkboxes.
+evidence: a correction the model admitted becomes a draft **convention** for
+the repo. They go to the proposals page with checkboxes. (A `stopword` line
+written by hand is still applied; the harness stopped proposing them, since
+the model never opens an injected page and every injection became one.)
 
 **Never apply a proposal on your own.** Show them, give an opinion per item
 ("not reading a page is not the same as it being irrelevant"), and let the user
@@ -161,6 +162,10 @@ python3 ${CLAUDE_PLUGIN_ROOT}/brain/proposals.py --apply
 python3 ${CLAUDE_PLUGIN_ROOT}/brain/hit_rate.py
 ```
 
-Reads the transcripts and reports, per hook, how often the model acted on what
-was injected. Measure before adding features: a hook that fails silently looks
-exactly like one that works.
+Reads the transcripts and reports, per hook, what happened after each
+injection: a lead (`path` or `symbol`) from the snippet used by a tool in the
+same turn, the guard's candidate edited, a correction in the next human
+prompt next to the repo's base rate, a manual `ksearch`, a rule written to
+memory or CLAUDE.md; per page and per repo. `--strength` rewrites the table
+recall uses to raise or lower pages from those outcomes. Measure before adding
+features: a hook that fails silently looks exactly like one that works.

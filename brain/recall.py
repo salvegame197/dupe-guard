@@ -7,7 +7,16 @@ injects the best findings into context, without waiting for the model to think
 of searching.
 
 Design rules (silence is the default):
+  - Only answers a PERSON. Task notifications, system messages, pasted skill
+    text and context-continuation summaries go through this hook too (907 of
+    2,673 prompts in 28 days, measured); they are skipped before any search.
   - Only fires on prompts with substance. "ok", "go ahead" trigger nothing.
+  - In a code session (cwd inside a git repo, or the guard saw an edit in a
+    repo this session) the chat exports in `Claude Web/` are muted: 59 % of
+    what was injected came from there and none of it was about the code.
+  - The native memory of the session's own project folder is never injected:
+    Claude Code already loads it. Memory from OTHER folders is, labelled with
+    where it came from ("memory of gate-control").
   - Only injects above a score threshold. A weak result is worse than none: it
     spends context and pulls attention away.
   - Never repeats what it already injected in the same session.
@@ -15,15 +24,18 @@ Design rules (silence is the default):
 """
 
 import json
+import os
 import re
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.core import DATA, fold, hook_output, labels, load_config   # noqa: E402
+from brain.core import (DATA, DEFAULTS, HOME_DIR, fold, hook_output, labels,     # noqa: E402
+                        load_config, project_folder_name, redact)
 
 STATE_DIR = DATA / "recall-state"
+GUARD_STATE_DIR = HOME_DIR / "state"          # written by guard.py, read here
 MANUAL_STOPWORDS = DATA / "recall-stopwords.json"
 STRENGTH = DATA / "recall-strength.json"      # written by hit_rate.py --strength
 LOG = DATA / "recall-log.jsonl"
@@ -31,6 +43,24 @@ MAX_SNIPPETS = 1           # one snippet per page keeps an injection near 700 ch
 MAX_LOG_LINES = 5000
 
 MIN_PROMPT_CHARS = 25      # below this it is an acknowledgement, not a question
+MIN_PROMPT_WORDS = 3       # useful words (3+ letters, outside code and URLs)
+
+# What arrives in `prompt` without a person having typed it. Each is the
+# opening of the text as Claude Code writes it: background task results,
+# system and local-command envelopes, images, the summary that opens a
+# resumed session, a slash command, a skill's SKILL.md pasted whole (a
+# <command-message> envelope or its YAML frontmatter), cross-session context.
+NON_HUMAN_PREFIXES = (
+    ("task-notification", "<task-notification"),
+    ("system", "<system"),
+    ("local-command", "<local-command"),
+    ("image", "[Image"),
+    ("continuation", "This session is being continued"),
+    ("command", "<command-name>"),
+    ("skill", "<command-message>"),
+    ("skill", "---\nname:"),
+    ("cross-session", "<cross-session"),
+)
 MIN_SCORE_TITLE = 7.0      # with the TITLE required to match (see pick), a
                            # modest score is enough; the score only ranks.
 MIN_SOLO_TERM = 6          # a single term only counts if it is specific
@@ -115,6 +145,77 @@ def load_set(path: Path) -> set:
         return set(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError):
         return set()
+
+
+def non_human(prompt: str) -> str:
+    """Why this prompt is not a person asking something, or "" when it is.
+    Decided on the raw text, before any search: the terms a notification
+    yields ('task-notification', 'tool-use-id', 'output-file') were the most
+    frequent search terms in the log, and every one of them was a waste."""
+    text = (prompt or "").lstrip()
+    if not text:
+        return "empty"
+    for reason, prefix in NON_HUMAN_PREFIXES:
+        if text.startswith(prefix):
+            return reason
+    if len(text) < MIN_PROMPT_CHARS:
+        return "short"
+    # Useful words: outside code, URLs and paths, three letters or more.
+    body = re.sub(r"```.*?```", " ", text, flags=re.S)
+    body = re.sub(r"`[^`]*`|https?://\S+|[/~][\w./\-]{6,}", " ", body)
+    if len(re.findall(r"[^\W\d_]{3,}", body)) < MIN_PROMPT_WORDS:
+        return "short"
+    return ""
+
+
+def in_git_repo(cwd: str) -> bool:
+    """cwd inside a git worktree, found by walking up for `.git` (a folder,
+    or the file a worktree leaves). No subprocess: this runs on every
+    prompt. A `.git` in the home folder itself (dotfiles) does not count."""
+    if not cwd:
+        return False
+    try:
+        p = Path(cwd).resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return False
+    for d in (p, *p.parents):
+        if d == home:
+            return False
+        if (d / ".git").exists():
+            return True
+    return False
+
+
+def guard_repos(session_id: str) -> list:
+    """Repos the guard saw an edit in during this session (guard.py records
+    them); the session may have started outside any repo."""
+    if not session_id:
+        return []
+    try:
+        st = json.loads((GUARD_STATE_DIR / f"{session_id[:64]}.json").read_text())
+        return [r for r in st.get("repos") or [] if isinstance(r, str)]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return []
+
+
+def code_session(cwd: str, session_id: str) -> bool:
+    """A session about code: the cwd is in a git repo, or something edited
+    this session was. The recall mutes personal chat exports here."""
+    return in_git_repo(cwd) or any(in_git_repo(r) for r in guard_repos(session_id))
+
+
+def muted_prefixes(cfg: dict, code: bool) -> tuple:
+    """Vault folders that get weight 0 in a code session."""
+    return tuple(cfg.get("code_session_mute") or ()) if code else ()
+
+
+def own_memory_prefix(cwd: str) -> str:
+    """Index-id prefix of the native memory Claude Code loads for this cwd
+    (`memory/<project folder>/`). The folder is keyed by the cwd as given,
+    the way Claude Code keys it, so a session started in a subfolder has
+    its own memory and the repo root's counts as another project's."""
+    return f"memory/{project_folder_name(cwd)}/" if cwd else ""
 
 
 def terms_from(prompt: str, languages):
@@ -241,7 +342,10 @@ def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14
         # one that works: a noise word and a useful term can have the same
         # corpus frequency, so no IDF threshold separates them, while the title
         # is the subject already distilled.
-        if not title_hit(terms, r["title"] or "", aliases):
+        # A native memory note's one-line description is its subject as
+        # much as the name is; both face the gate.
+        subject = " ".join(x for x in (r.get("title"), r.get("desc")) if x)
+        if not title_hit(terms, subject, aliases):
             # A curated note may still qualify on its body alone, with a
             # higher bar; a chat log or a session may not.
             curated = r["source"] == "vault" and any(r["id"].startswith(p) for p in trusted)
@@ -256,12 +360,17 @@ def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14
     return picked
 
 
-def recall(prompt: str, session_id: str, cfg: dict):
+def recall(prompt: str, session_id: str, cfg: dict, cwd: str = ""):
     """(terms, matched, picked) for a prompt — the whole decision, with no
     side effects. The hook and the evaluation script both go through here, so
-    what is measured is exactly what runs."""
+    what is measured is exactly what runs. `cwd` decides the code-session
+    mode; the evaluation scripts pass none and get the plain behaviour."""
     from brain import ksearch
-    if len(prompt.strip()) < MIN_PROMPT_CHARS or not ksearch.INDEX.exists():
+    why = non_human(prompt)
+    if why:
+        log_decision(session_id, prompt, [], [], [], why, decision="skip:non-human")
+        return [], 0, []
+    if not ksearch.INDEX.exists():
         return [], 0, []
     terms = terms_from(prompt, cfg["languages"])
     # One term alone is usually too generic, unless it is long and specific.
@@ -271,51 +380,38 @@ def recall(prompt: str, session_id: str, cfg: dict):
     aliases = {fold(k): v for k, v in (cfg.get("project_aliases") or {}).items()}
     synonyms = {t: [aliases[t]] for t in terms if t in aliases}
     found, _ = ksearch.search(terms, limit=12, synonyms=synonyms)
+    # Weight 0 in a code session: the chat exports are about the user's
+    # life, and a prompt about code shares words with them by accident
+    # ("lugar", "cliente", "api"). Dropped before the cut to twelve, so a
+    # project note ranked below them still gets its turn, and again after
+    # the vector side, so it cannot bring them back.
+    code = code_session(cwd, session_id)
+    muted = muted_prefixes(cfg, code)
+    own = own_memory_prefix(cwd)
+
+    def audible(src, doc_id):
+        if src == "memory":
+            return not (own and doc_id.startswith(own))   # Claude Code loads it already
+        return not (muted and src == "vault" and doc_id.startswith(muted))
+
+    found = [x for x in found if audible(x[1]["src"], x[1]["id"])]
     table = strength_table()
     results = [{"score": round(weighted(s, d, cfg, terms) * strength_factor(d["id"], table), 1),
                 "source": d["src"], "title": d["title"], "qhit": d.get("_qhit", 0.0),
+                "desc": d.get("desc", ""), "kind": d.get("kind", ""),
                 "project": d["project"], "date": d["date"], "id": d["id"],
                 "snippets": [ksearch.snippet(t["t"], terms) for t in b[:MAX_SNIPPETS]]}
                for s, d, b in found[:12]]
-    results = hybrid(results, prompt, terms, cfg, table)
+    results = [r for r in hybrid(results, prompt, terms, cfg, table) if audible(r["source"], r["id"])]
     results.sort(key=lambda x: -x["score"])
     picked = pick(results[:8], terms, already_seen(session_id), session_id, alias_words(cfg),
                   tuple(cfg.get("trusted_prefixes") or ()), cfg.get("body_match_min", 14.0),
                   (cfg.get("embeddings") or {}).get("strong_cos", 0.6))
-    # The card comes on top of what the words found, never in its place:
-    # the words know the ASPECT asked ("leather" of the car), the card knows
-    # the THING (which car). Measured: replacing cost three blind answers.
-    card = [c for c in by_authority(results, prompt, cfg) if c["id"] not in already_seen(session_id)][:1]
-    picked = card + [r for r in picked if r["id"] not in {c["id"] for c in card}]
     rejected = [x for x in results[:8] if x not in picked]
     log_decision(session_id, prompt, terms, picked, rejected,
-                 "" if picked else ("no title match above threshold" if results else "nothing found"))
+                 "" if picked else ("no title match above threshold" if results else "nothing found"),
+                 mode="code" if code else "chat", repo=Path(cwd).name if cwd else "")
     return terms, len(found), picked
-
-
-AUTHORITY_SCORE = 200.0     # above any keyword score: a card match is not a guess
-
-
-def by_authority(results, prompt, cfg):
-    """Pages the catalog names for the prompt, before any word is searched.
-    The snippet is the page's claims and summary, so the answer usually
-    arrives without the page being opened. Nothing here has a threshold."""
-    if not (cfg.get("catalog") or {}).get("enabled"):
-        return []
-    from brain import catalog
-    known = {r["id"] for r in results}
-    out = []
-    for e, pages, claims in catalog.resolve(prompt, cfg):
-        for page in pages[:1]:
-            if page["id"] in known or len(out) >= 2:
-                continue
-            known.add(page["id"])
-            facts = [c.replace("|", " ") for c in (page.get("claims") or [])][:4]
-            text = "; ".join(x for x in [page.get("summary") or ""] + facts if x) or e.get("canonical", "")
-            out.append({"score": AUTHORITY_SCORE, "source": "vault", "title": page["title"], "qhit": 1.0,
-                        "project": "", "date": page.get("date", ""), "id": page["id"],
-                        "authority": e["id"], "snippets": [text[:400]]})
-    return out
 
 
 def hybrid(results, prompt, terms, cfg, table):
@@ -373,29 +469,58 @@ def strength_table() -> dict:
         return {}
 
 
+STRENGTH_MIN_INJECTIONS = 5     # below this a correction rate is one event, not a rate
+STRENGTH_MIN_CORRECTIONS = 2    # one correction after one injection proves nothing
+CORRECTION_EXCESS_SOFT = 0.05   # corrected minus expected, per injection, that costs 0.8
+CORRECTION_EXCESS_HARD = 0.15   # ... and 0.6
+
+
 def strength_factor(doc_id: str, table: dict) -> float:
     """
-    Memory strength, Ebbinghaus-style but fed by evidence: a page the model
-    opened after it was injected gets stronger; a page injected many times
-    and never opened fades. hit_rate.py --strength derives the table from
-    the transcripts; this only reads it.
+    Memory strength fed by what happened AFTER the injection, not by whether
+    the page was opened (it never is: 0 in 1,145, measured). hit_rate.py
+    --strength derives the table from the transcripts; this only reads it.
+    Per page the table holds `injected`, `touched` (a path or symbol from
+    the injected snippet was used by a tool call in the same turn),
+    `corrected` (the next human prompt was a correction) and `expected`
+    (the sum, over the page's injections, of the correction base rate of
+    the repo the session was in).
+
+      factor = up * down
+      up     = min(1 + 0.15 * touched, 1.6)             when touched > 0, else 1
+      down   = 0.6 if excess >= 0.15, 0.8 if excess >= 0.05, else 1
+               with excess = (corrected - expected) / injected,
+               only when injected >= 5 and corrected >= 2 (one
+               correction after one injection is an event, not a rate)
+      no signal at all (never touched, corrections at the base rate) = 1.0
+
+    A page that is injected many times and simply ignored stays neutral:
+    "not opened" was the signal that made every page fade alike. Tables from
+    before 2026-11-08 (`injected`, `opened` only) read as neutral.
     """
     s = table.get(doc_id)
     if not s:
         return 1.0
-    inj, opened = s.get("injected", 0), s.get("opened", 0)
-    if opened:
-        return min(1.0 + 0.15 * opened, 1.6)
-    if inj >= 5:
-        return 0.6
-    if inj >= 3:
-        return 0.8
-    return 1.0
+    inj = s.get("injected", 0) or 0
+    touched = s.get("touched", 0) or 0
+    up = min(1.0 + 0.15 * touched, 1.6) if touched else 1.0
+    down = 1.0
+    if inj >= STRENGTH_MIN_INJECTIONS and (s.get("corrected", 0) or 0) >= STRENGTH_MIN_CORRECTIONS:
+        excess = ((s.get("corrected", 0) or 0) - (s.get("expected", 0.0) or 0.0)) / inj
+        if excess >= CORRECTION_EXCESS_HARD:
+            down = 0.6
+        elif excess >= CORRECTION_EXCESS_SOFT:
+            down = 0.8
+    return round(up * down, 3)
 
 
-def log_decision(session_id: str, prompt: str, terms, picked, rejected, reason: str):
+def log_decision(session_id: str, prompt: str, terms, picked, rejected, reason: str,
+                 decision: str = "", mode: str = "", repo: str = ""):
     """One line per decision, injected or not, with why. It is what lets a
-    bad injection be explained a week later instead of guessed at."""
+    bad injection be explained a week later instead of guessed at. Decisions:
+    inject, silent, skip:non-human (never searched). `mode` is code or chat;
+    `repo` the cwd's basename; `picked` carries the index id too, so a later
+    count by vault folder does not have to guess from a title."""
     if not session_id:
         return              # evaluation runs (truth.py) pass no session
     try:
@@ -403,13 +528,19 @@ def log_decision(session_id: str, prompt: str, terms, picked, rejected, reason: 
         if LOG.exists() and LOG.stat().st_size > MAX_LOG_LINES * 300:
             lines = LOG.read_text(encoding="utf-8").splitlines()[-MAX_LOG_LINES // 2:]
             LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        row = {"ts": int(time.time()), "session": session_id[:8], "prompt": redact(prompt)[:80],
+               "terms": terms, "decision": decision or ("inject" if picked else "silent"),
+               "reason": reason,
+               "picked": [(p["title"][:60], p["score"]) for p in picked],
+               "rejected": [(p["title"][:60], p["score"]) for p in rejected[:3]]}
+        if mode:
+            row["mode"] = mode
+        if repo:
+            row["repo"] = repo
+        if picked:
+            row["ids"] = [p["id"] for p in picked]
         with LOG.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "ts": int(time.time()), "session": session_id[:8], "prompt": prompt[:80],
-                "terms": terms, "decision": "inject" if picked else "silent", "reason": reason,
-                "picked": [(p["title"][:60], p["score"]) for p in picked],
-                "rejected": [(p["title"][:60], p["score"]) for p in rejected[:3]],
-            }, ensure_ascii=False) + "\n")
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError:
         pass
 
@@ -433,9 +564,17 @@ def weighted(score: float, doc: dict, cfg: dict, terms=()) -> float:
         # multiplies into w: assigning here silently dropped the canonical x2.
         best, factor = "", imp.get("vault", 1.0)
         for prefix, weight in imp.items():
-            if prefix != "vault" and doc["id"].startswith(prefix) and len(prefix) > len(best):
+            if prefix not in ("vault", "memory", "memory_feedback") and doc["id"].startswith(prefix) \
+                    and len(prefix) > len(best):
                 best, factor = prefix, weight
         w *= factor
+    elif doc["src"] == "memory":
+        # A config that lists its own `importance` rarely names these keys;
+        # the defaults apply so the native memory keeps outranking the vault.
+        base = DEFAULTS["importance"]
+        w *= imp.get("memory", base["memory"])
+        if doc.get("kind") == "feedback":
+            w *= imp.get("memory_feedback", base["memory_feedback"])
     else:
         w *= imp.get("transcript", 1.0)
     if cfg.get("recency_boost") and doc.get("date"):
@@ -457,7 +596,7 @@ def main() -> int:
         return 0
     prompt = payload.get("prompt") or ""
     session_id = payload.get("session_id") or ""
-    terms, matched, picked = recall(prompt, session_id, cfg)
+    terms, matched, picked = recall(prompt, session_id, cfg, payload.get("cwd") or os.getcwd())
     if not picked:
         return 0
 
@@ -465,7 +604,12 @@ def main() -> int:
     lines = [f"## {L['recall_header']}", "",
              f"{L['recall_search']}: {', '.join(terms)} — {matched} {L['recall_found']}", ""]
     for r in picked:
-        origin = "vault" if r["source"] == "vault" else (r.get("project") or "?")
+        if r["source"] == "vault":
+            origin = "vault"
+        elif r["source"] == "memory":
+            origin = L["recall_memory_of"].format(p=r.get("project") or "?")
+        else:
+            origin = r.get("project") or "?"
         when = f", {r['date']}" if r.get("date") else ""
         lines.append(f"**{r['title']}** ({origin}{when})")
         for s in r.get("snippets", [])[:MAX_SNIPPETS]:

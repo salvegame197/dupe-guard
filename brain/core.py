@@ -8,12 +8,30 @@ start writing conversations to disk; `"brain": {"enabled": true}` in
 """
 import json
 import os
+import re
 import unicodedata
 from pathlib import Path
 
 HOME_DIR = Path(os.environ.get("DUPE_GUARD_HOME") or (Path.home() / ".dupe-guard"))
 CONFIG_FILE = HOME_DIR / "config.json"
 DATA = HOME_DIR / "brain"
+# Working directory of every `claude -p` the brain starts (distill, catalog).
+# A fixed folder of its own, so the child's transcripts land in one known
+# project folder under ~/.claude/projects that the index can leave out,
+# instead of in the folder of whatever session happened to stop.
+WORKER_DIR = HOME_DIR / "worker"
+
+
+def worker_dir() -> Path:
+    WORKER_DIR.mkdir(parents=True, exist_ok=True)
+    return WORKER_DIR
+
+
+def project_folder_name(cwd) -> str:
+    """The folder name Claude Code gives a working directory under
+    ~/.claude/projects: every character outside [A-Za-z0-9] becomes '-'
+    ("/Users/x/.dupe-guard/worker" -> "-Users-x--dupe-guard-worker")."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
 
 DEFAULTS = {
     "enabled": False,
@@ -42,7 +60,11 @@ DEFAULTS = {
     # importance; a keyword score alone has only the first). Keys are "vault"
     # folder prefixes or "transcript"; a note distilled by hand outranks a raw
     # session, and a project note outranks a chat log. Multipliers on the score.
-    "importance": {"vault": 1.2, "transcript": 1.0},
+    # "memory" is the native memory Claude Code writes per project folder
+    # (~/.claude/projects/*/memory/*.md): a rule the person taught, so it
+    # outranks any vault folder; a `feedback` note (a correction) gets
+    # "memory_feedback" on top of that.
+    "importance": {"vault": 1.2, "transcript": 1.0, "memory": 1.6, "memory_feedback": 1.25},
     # Recent pages get a small boost: 1.15 within a week, 1.08 within a month.
     "recency_boost": True,
     # Vault folders whose pages may be recalled on a strong BODY match even
@@ -52,6 +74,11 @@ DEFAULTS = {
     # question. Empty = title match required everywhere.
     "trusted_prefixes": [],
     "body_match_min": 14.0,
+    # Vault folder prefixes that recall never injects in a CODE session (cwd
+    # inside a git repo, or a repo edited this session). Chat exports are
+    # about the person's life; in a session about code they only match by
+    # accident, and they were 59 % of what was injected. Empty = mute none.
+    "code_session_mute": ["Claude Web/"],
     "distill_model": "sonnet",
     "distill_samples": 3,
     # Automatic distilling. Off by default: it spends the user's plan. When
@@ -72,8 +99,9 @@ DEFAULTS = {
     # (brain/questions.py); indexed as text, so paraphrase is matched by the
     # keyword search itself. Off by default; a long background job.
     "questions": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b",
-    "catalog": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b", "promote_at": 2},
                   "per_unit": 3, "sources": ["vault"]},
+    # Entity catalog compiled from page headers (brain/catalog.py).
+    "catalog": {"enabled": False, "url": "http://localhost:11434", "model": "qwen2.5:3b", "promote_at": 2},
     "embeddings": {"enabled": False, "url": "http://localhost:11434", "model": "bge-m3",
                    "weight": 30.0, "min_cos": 0.45, "bonus_cos": 0.55, "strong_cos": 0.6, "gap": 0.03, "top": 20},
 }
@@ -112,6 +140,46 @@ def is_dataless(path) -> bool:
         return bool(os.stat(path).st_flags & 0x40000000)
     except (OSError, AttributeError):
         return False
+
+
+REDACTED = "[REDACTED]"
+
+# What a secret pasted into a prompt looks like. Each pattern is replaced
+# before the text is written anywhere durable (vault, queue, index, log).
+# Prefixed keys (sk-, ghp_, xox, AKIA) are vendor formats; the JWT is three
+# base64url parts; `password=` keeps the key and drops the value; the last
+# one is any long base64 run (certificates, encoded blobs).
+_SECRET_PATTERNS = [
+    re.compile(r"\b(?:sk|pk|rk)-(?:[a-z]+-)?[A-Za-z0-9_-]{16,}"),            # OpenAI/Anthropic/Stripe style
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),                           # Slack
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                                     # AWS access key id
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"),  # JWT
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"),
+]
+_SECRET_KV = re.compile(
+    r"(?i)\b(senha|password|passwd|pwd|token|secret|client_secret|api[_-]?key|"
+    r"access[_-]?key|private[_-]?key|auth)\s*([:=])\s*[\"']?([^\s\"',;]{4,})")
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
+
+
+def _looks_encoded(s: str) -> bool:
+    """A base64 run and not a long word: has a digit, upper and lower case."""
+    return any(c.isdigit() for c in s) and any(c.isupper() for c in s) and any(c.islower() for c in s)
+
+
+def redact(text: str) -> str:
+    """Text with anything that looks like a secret replaced by [REDACTED].
+    Applied to prompts before they reach the vault, the distill queue, the
+    search index or the decision log. It is a filter, not a detector: a
+    false positive costs one unreadable token, a miss costs a leaked key."""
+    if not text:
+        return text
+    for rx in _SECRET_PATTERNS:
+        text = rx.sub(REDACTED, text)
+    text = _SECRET_KV.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
+    text = _BASE64_RUN.sub(lambda m: REDACTED if _looks_encoded(m.group(0)) else m.group(0), text)
+    return text
 
 
 def settings(cfg: dict, key: str, defaults: dict) -> dict:
@@ -173,9 +241,10 @@ LABELS = {
         "recall_found": "result(s), the strongest below.",
         "recall_footer": ("_A reminder of work done before; it may be out of date. "
                           "Check against the code or the vault before acting on it._"),
+        "recall_memory_of": "memory of {p}",
+        "distill_skipped": "Distill skipped: this session already wrote {files}",
         "proposal_session": "session",
         "proposal_word": "proposal",
-        "proposal_matched": "matched {ex} and the page was not read",
         "proposal_injections": "recall: {inj} injections, {read} with a page read",
         "applied": "applied",
         "superseded_on": "Superseded on",
@@ -187,17 +256,6 @@ LABELS = {
         "ctx_content": "Content: {n} .md pages, {kb:.0f} KB (~{ktok} thousand tokens in total).",
         "ctx_dont_load": "**Do NOT load the whole vault.** Use a targeted search — it costs ~0.01s:",
         "ctx_then_read": "Then read only the pages that matched.",
-        "ctx_when": "## When to use it",
-        "ctx_when_lines": [
-            "- **BEFORE** investigating a project or its architecture from scratch: search here first. "
-            "Much of the history (decisions, pitfalls, earlier sessions) is already written down.",
-            "- When the user says \"remember?\", \"we did this already\", \"how was that\".",
-            "- **AT THE END** of sessions with significant work (a new feature, an architectural "
-            "decision, a hard bug solved): update the project page, the indexes and any affected hubs. "
-            "Use [[wikilinks]], tags in YAML frontmatter, {note_language}, concise — focus on decisions "
-            "and pitfalls, not code.",
-            "- Do not duplicate a page: update the existing one.",
-        ],
         "ctx_failed_title": "## ⚠️ Automatic session recording failed recently",
         "ctx_failed_body": "See `{path}` — until it is fixed, sessions may not be becoming notes "
                            "(local transcripts expire).",
@@ -222,9 +280,10 @@ LABELS = {
         "recall_found": "resultado(s), os mais fortes abaixo.",
         "recall_footer": ("_Isto e um lembrete do que ja foi trabalhado antes — pode estar "
                           "desatualizado. Confirme no codigo/vault antes de agir._"),
+        "recall_memory_of": "memoria de {p}",
+        "distill_skipped": "Distill pulado: esta sessao ja escreveu {files}",
         "proposal_session": "sessão",
         "proposal_word": "proposta",
-        "proposal_matched": "casou {ex} e a pagina nao foi lida",
         "proposal_injections": "recall: {inj} injecoes, {read} com pagina lida",
         "applied": "aplicada",
         "superseded_on": "Superado em",
@@ -236,17 +295,6 @@ LABELS = {
         "ctx_content": "Conteudo: {n} paginas .md, {kb:.0f} KB (~{ktok} mil tokens no total).",
         "ctx_dont_load": "**NAO carregue o vault inteiro.** Use busca dirigida — custa ~0,01s:",
         "ctx_then_read": "Depois leia apenas as paginas que casaram.",
-        "ctx_when": "## Quando usar",
-        "ctx_when_lines": [
-            "- **ANTES** de investigar um projeto/arquitetura do zero: busque aqui primeiro. "
-            "Boa parte do contexto historico (decisoes, gotchas, sessoes anteriores) ja esta escrito.",
-            "- Quando o usuario disser \"lembra?\", \"ja fizemos isso\", \"como era aquilo\".",
-            "- **AO FIM** de sessoes com trabalho significativo (feature nova, decisao "
-            "arquitetural, bug complexo resolvido): atualize a pagina do projeto, os indices "
-            "e os hubs afetados. Use [[wikilinks]], tags no frontmatter YAML, {note_language}, conciso — "
-            "foque em decisoes e gotchas, nao em codigo.",
-            "- Nao duplique pagina: atualize a existente.",
-        ],
         "ctx_failed_title": "## ⚠️ A gravacao automatica de sessao falhou recentemente",
         "ctx_failed_body": "Ver `{path}` — enquanto isso, sessoes podem nao estar "
                            "virando nota (o transcript local expira).",

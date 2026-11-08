@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-ksearch — search accumulated knowledge: Claude Code transcripts and the vault.
+ksearch — search accumulated knowledge: Claude Code transcripts, the vault and
+the native memory Claude Code keeps per project folder.
 
 Transcripts hold almost all the real work, but they are unreadable in practice:
 grep returns JSON blobs, and "632 sessions match" is not an answer. Here the
@@ -13,9 +14,11 @@ No LLM: indexing and search are deterministic and offline.
 
 Usage:
     ksearch.py --reindex              # (re)build the index
+    ksearch.py --reindex --with-questions   # also ingest brain/questions.py output (offline self-test)
     ksearch.py payment refund         # search (every term counts)
     ksearch.py payment --json         # output for an agent
     ksearch.py payment --limit 5 --project billing-api
+    ksearch.py catraca --source memory   # only ~/.claude/projects/*/memory/*.md
 """
 
 import argparse
@@ -28,9 +31,15 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.core import DATA, fold, is_dataless, load_config     # noqa: E402
+from brain.core import (DATA, WORKER_DIR, fold, is_dataless, load_config,      # noqa: E402
+                        project_folder_name, redact)
+from brain.distill import CHECKLIST, INSTRUCTIONS                              # noqa: E402
 
 INDEX = DATA / "ksearch-index.jsonl"
+# The opening words of the prompts the brain itself sends to `claude -p`. A
+# transcript that starts with one of them is a worker's, not a person's: 94
+# of them were in the index as "sessions", each carrying a whole note.
+WORKER_PROMPTS = tuple(" ".join(p[:60].split()) for p in (INSTRUCTIONS, CHECKLIST))
 STOPWORDS = DATA / "ksearch-stopwords.json"
 ASSOC = DATA / "ksearch-assoc.json"
 MAX_TURN_CHARS = 2000
@@ -55,7 +64,17 @@ def is_synthetic(body: str) -> bool:
         return True
     if body.startswith("#") and "\n## " in body and len(body) > 300:
         return True
+    if body.startswith(WORKER_PROMPTS):
+        return True
     return False
+
+
+def is_worker_transcript(path: Path, cwd: str = "") -> bool:
+    """A transcript written by the brain's own `claude -p` child: it lives in
+    the project folder of WORKER_DIR, or records that folder as its cwd."""
+    if path.parent.name == project_folder_name(WORKER_DIR):
+        return True
+    return bool(cwd) and Path(cwd) == WORKER_DIR
 
 
 def text_of(message) -> str:
@@ -90,12 +109,18 @@ def index_transcript(path: Path):
                 if kind not in ("user", "assistant"):
                     continue
                 meta["project"] = meta["project"] or row.get("cwd")
+                if is_worker_transcript(path, meta["project"] or ""):
+                    return None       # the brain talking to itself, not a session
                 meta["branch"] = meta["branch"] or row.get("gitBranch")
                 ts = row.get("timestamp")
                 if ts and (meta["date"] is None or ts > meta["date"]):
                     meta["date"] = ts
-                body = clean(text_of(row.get("message")))
+                # Redacted before anything is kept: the index lives outside
+                # ~/.claude and is read on every prompt.
+                body = clean(redact(text_of(row.get("message"))))
                 if kind == "user":
+                    if body.startswith(WORKER_PROMPTS) and not any(t["r"] == "u" for t in turns):
+                        return None   # first prompt is the brain's own: a worker child
                     if is_synthetic(body):
                         continue
                 elif len(body) < 40:
@@ -155,31 +180,190 @@ def index_vault(path: Path, root: Path):
     }
 
 
-def build_index() -> int:
+MEMORY_INDEX_FILE = "MEMORY.md"       # the per-folder index Claude Code keeps; not a note
+
+
+def memory_frontmatter(raw: str):
+    """(fields, body) of a native memory file. The frontmatter is `name`,
+    `description` and a nested `metadata:` block with `type` (feedback,
+    project, reference, user) and `modified`; a few older files carry `type`
+    at the top level. Read with regexes: no YAML parser in a hook."""
+    m = re.match(r"---\n(.*?)\n---\n?", raw, flags=re.S)
+    if not m:
+        return {}, raw
+    fm, body = m.group(1), raw[m.end():]
+    fields = {}
+    for key in ("name", "description", "type", "modified"):
+        k = re.search(rf"^\s*{key}:\s*(.+?)\s*$", fm, flags=re.M)
+        if k:
+            fields[key] = k.group(1).strip().strip("\"'")
+    return fields, body
+
+
+def unfold_folder(folder: str, home: Path = None):
+    """The directory a project folder name stands for: from the home folder
+    down, each child whose own folded name ('API-Producer-NODE' ->
+    'API-Producer-NODE', 'ancora_v1' -> 'ancora-v1') is the next piece of
+    the name is followed. Only for folders whose transcripts have all
+    expired, at index time; None when nothing on disk matches."""
+    home = home or Path.home()
+    prefix = project_folder_name(home) + "-"
+    if not folder.startswith(prefix):
+        return None
+    stack = [(home, folder[len(prefix):])]
+    while stack:
+        p, rest = stack.pop()
+        if not rest:
+            return p
+        try:
+            children = [c for c in p.iterdir() if c.is_dir()]
+        except OSError:
+            continue
+        for c in children:
+            name = project_folder_name(c.name)
+            if rest == name:
+                stack.append((c, ""))
+            elif rest.startswith(name + "-"):
+                stack.append((c, rest[len(name) + 1:]))
+    return None
+
+
+def memory_label(folder: str, cwd_by_folder: dict) -> str:
+    """What to call the project a memory folder belongs to: the basename of
+    the cwd its transcripts record ('shop-admin'); '~' for the home folder;
+    when every transcript has expired, the basename of the directory the
+    folder name unfolds to; failing that, the name without the home prefix."""
+    if folder == project_folder_name(Path.home()):
+        return "~"
+    label = cwd_by_folder.get(folder)
+    if label:
+        return label
+    found = unfold_folder(folder)
+    if found is not None:
+        return found.name
+    prefix = project_folder_name(Path.home()) + "-"
+    return folder[len(prefix):] if folder.startswith(prefix) else folder.lstrip("-")
+
+
+def index_memory(path: Path, folder: str, label: str):
+    """One native memory file (~/.claude/projects/<folder>/memory/<name>.md)
+    as a document: id `memory/<folder>/<name>.md`, title from `name`, the
+    description as the first section (it is the subject in one line), then
+    the body by section like a vault page. `kind` carries the memory type."""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    fields, body = memory_frontmatter(raw)
+    name = fields.get("name") or path.stem
+    desc = clean(fields.get("description") or "")
+    turns = []
+    if len(desc) >= 10:
+        turns.append({"r": "v", "t": desc, "f": fold(desc)})
+    for chunk in re.split(r"(?=^#{1,3} )", body, flags=re.M):
+        text = clean(chunk)
+        if len(text) >= 40:
+            t = text[:MAX_TURN_CHARS * 2]
+            turns.append({"r": "v", "t": t, "f": fold(t)})
+    if not turns:
+        return None
+    date = (fields.get("modified") or "")[:10]
+    if not re.match(r"\d{4}-\d{2}-\d{2}$", date):
+        try:
+            date = time.strftime("%Y-%m-%d", time.localtime(path.stat().st_mtime))
+        except OSError:
+            date = None
+    return {
+        "src": "memory",
+        "id": f"memory/{folder}/{path.name}",
+        "title": name,
+        "desc": desc,
+        "kind": fields.get("type") or "project",
+        "project": label,
+        "branch": None,
+        "date": date,
+        "turns": turns,
+    }
+
+
+def memory_files(transcripts: Path):
+    """(path, folder) of every native memory note, MEMORY.md and the brain's
+    own worker folder left out."""
+    if not transcripts.is_dir():
+        return
+    worker = project_folder_name(WORKER_DIR)
+    for folder in sorted(transcripts.iterdir()):
+        if folder.name == worker or not (folder / "memory").is_dir():
+            continue
+        for p in sorted((folder / "memory").glob("*.md")):
+            if p.name != MEMORY_INDEX_FILE and p.is_file():
+                yield p, folder.name
+
+
+def excluded_vault_paths(cfg) -> set:
+    """Vault files and folders that must not be searchable, resolved:
+      - the truth page holds the evaluation questions; indexed, it answers
+        them and the score lies;
+      - Sessions/Raw is the session log itself, a digest of the transcripts
+        already indexed, so it only duplicated them;
+      - the proposals page is a list of checkboxes about the harness, 78 KB
+        of it, rewritten every session; nothing a prompt should recall."""
+    vault = Path(cfg["vault"])
+    out = set()
+    for key in ("truth_page", "proposals_page", "raw_dir"):
+        if cfg.get(key):
+            out.add(str((vault / cfg[key]).resolve()))
+    return out
+
+
+def is_excluded(path: Path, excluded: set) -> bool:
+    try:
+        r = path.resolve()
+    except OSError:
+        return False
+    return any(str(r) == x or str(r).startswith(x + "/") for x in excluded)
+
+
+def build_index(with_questions: bool = False) -> int:
     cfg = load_config()
     started = time.time()
     written = 0
     INDEX.parent.mkdir(parents=True, exist_ok=True)
     tmp = INDEX.with_suffix(".tmp")
 
+    memories = 0
     with tmp.open("w", encoding="utf-8") as out:
+        cwd_by_folder = {}
         if cfg["transcripts"].is_dir():
             for p in cfg["transcripts"].rglob("*.jsonl"):
+                if is_worker_transcript(p):
+                    continue
                 doc = index_transcript(p)
                 if doc:
                     doc["tf"] = fold(doc["title"])
                     out.write(json.dumps(doc, ensure_ascii=False) + "\n")
                     written += 1
+                    if doc["project"]:
+                        cwd_by_folder.setdefault(p.parent.name, doc["project"])
+        # The native memory Claude Code writes per project folder: the rule
+        # taught in one repo is invisible from a session in another, and
+        # that is exactly what a cross-repo recall is for. The folded title
+        # includes the description, so its words count as title hits.
+        for p, folder in memory_files(cfg["transcripts"]):
+            doc = index_memory(p, folder, memory_label(folder, cwd_by_folder))
+            if doc:
+                doc["tf"] = fold(f"{doc['title']} {doc['desc']}")
+                out.write(json.dumps(doc, ensure_ascii=False) + "\n")
+                written += 1
+                memories += 1
         vault = cfg["vault"]
-        # the evaluation page holds the questions themselves; indexed, it
-        # answers them and the score lies
-        skip = {str((vault / cfg.get("truth_page", "")).resolve())} if cfg.get("truth_page") else set()
+        skip = excluded_vault_paths(cfg)
         evicted = 0
         if vault.is_dir():
             for p in vault.rglob("*.md"):
                 if any(part.startswith((".", "data-")) for part in p.relative_to(vault).parts):
                     continue
-                if str(p.resolve()) in skip:
+                if is_excluded(p, skip):
                     continue
                 if is_dataless(p):
                     evicted += 1          # not on disk: reading would block on the cloud
@@ -190,14 +374,18 @@ def build_index() -> int:
                     out.write(json.dumps(doc, ensure_ascii=False) + "\n")
                     written += 1
 
-    # questions the worker wrote for each block (brain/questions.py) join the
-    # document as turns of kind "q": the user's question can then match a
-    # stored question word for word
-    try:
-        from brain.questions import by_doc
-        qmap = by_doc()
-    except Exception:
-        qmap = {}
+    # Questions the worker wrote for each block (brain/questions.py) join the
+    # document as turns of kind "q", so a stored question can match the
+    # user's word for word. Only on request: the store (2 MB, written once
+    # in September) is an offline self-test now, not part of what every
+    # prompt reads; the automatic reindex never passes the flag.
+    qmap = {}
+    if with_questions:
+        try:
+            from brain.questions import by_doc
+            qmap = by_doc()
+        except Exception:
+            qmap = {}
     if qmap:
         lines = tmp.read_text(encoding="utf-8").splitlines()
         with tmp.open("w", encoding="utf-8") as out:
@@ -208,8 +396,8 @@ def build_index() -> int:
                 out.write(json.dumps(doc, ensure_ascii=False) + "\n")
     tmp.replace(INDEX)  # atomic swap: a concurrent search never sees half an index
     size = INDEX.stat().st_size / 1024 / 1024
-    print(f"indexed {written} documents in {time.time() - started:.1f}s "
-          f"({size:.1f} MB in {INDEX})", file=sys.stderr)
+    print(f"indexed {written} documents ({memories} native memory notes) in "
+          f"{time.time() - started:.1f}s ({size:.1f} MB in {INDEX})", file=sys.stderr)
     if evicted:
         print(f"{evicted} vault page(s) skipped: not on disk (cloud placeholder). "
               f"On macOS: brctl download \"{vault}\"", file=sys.stderr)
@@ -489,15 +677,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("query", nargs="*", help="search terms")
     ap.add_argument("--reindex", action="store_true")
+    ap.add_argument("--with-questions", action="store_true",
+                    help="with --reindex: ingest the stored questions (offline self-test only)")
     ap.add_argument("--limit", type=int, default=10)
     ap.add_argument("--project", help="filter by project substring")
-    ap.add_argument("--source", choices=["transcript", "vault"], help="filter by origin")
+    ap.add_argument("--source", choices=["transcript", "vault", "memory"], help="filter by origin")
     ap.add_argument("--json", action="store_true", help="output for an agent")
     ap.add_argument("--no-expand", action="store_true", help="disable synonyms")
     args = ap.parse_args()
 
     if args.reindex:
-        return build_index()
+        return build_index(with_questions=args.with_questions)
     if not args.query:
         ap.print_help()
         return 2
@@ -530,7 +720,7 @@ def main() -> int:
     print(f"{len(results)} result(s) for '{' '.join(args.query)}'{tag} "
           f"— showing {len(top)} ({elapsed * 1000:.0f}ms)\n")
     for rank, (total, doc, best) in enumerate(top, 1):
-        mark = "V" if doc["src"] == "vault" else " "
+        mark = {"vault": "V", "memory": "M"}.get(doc["src"], " ")
         where = doc["project"] or "?"
         when = f"  {doc['date']}" if doc["date"] else ""
         print(f"{rank:2}.{mark} [{where}]{when}  {doc['title']}   ·{total:.0f}")

@@ -170,9 +170,19 @@ The second brain writes it down for you, into a folder of markdown notes (the
 ```
 session starts   vault_context       compact index of the vault, never the whole vault
                  proposals_context   the harness's own proposals, waiting for you
-every prompt     recall              relevant notes injected, only above a threshold
+every prompt     recall              relevant notes injected, only above a threshold;
+                                     only for a person's prompt (task notifications,
+                                     system envelopes, pasted skills are skipped), and
+                                     in a code session the chat exports stay out.
+                                     Claude Code's own memory notes
+                                     (~/.claude/projects/*/memory/*.md) are indexed
+                                     too and recalled from OTHER project folders,
+                                     labelled "memory of <project>"; the current
+                                     folder's are left to Claude Code
 end of a turn    reindex             search index refreshed, at most every 15 minutes
-session ends     session_log         the verifiable trace: requests, files, commits, tokens
+session ends     session_log         the verifiable trace: requests, files, commits, tokens;
+                                     a session that already wrote a memory note or a
+                                     CLAUDE.md is not queued for distilling
 on demand        distill             a model turns the trace into decisions and pitfalls
                                      inside the project's note
 ```
@@ -196,16 +206,22 @@ what was written and the command to revert any of it.
 Hooks that fail do so silently, and a silent hook looks exactly like a working
 one. Two tools deal with that:
 
-- **`hit_rate.py`** reads the transcripts and reports, per hook, how often the
-  model acted on what was injected. On the setup this was built on, it found
-  the guard had been blind to 96% of writes and that recall pages were almost
-  never opened.
+- **`hit_rate.py`** reads the transcripts and reports, per hook, what
+  happened after each injection: a path or symbol from the snippet used by a
+  tool call in the same turn, the guard's candidate edited instead of a new
+  file, a correction in the next human prompt (next to the repo's base rate
+  of corrections), a manual `ksearch`, a rule written to memory or
+  CLAUDE.md. Per page and per repo. "Page opened" is still a column but no
+  longer the ruler (it is 0 in 1,145 injections). `--strength` turns the
+  first and third signals into the multiplier recall applies to each page;
+  a page with no signal stays neutral instead of fading.
 - **Proposals.** At the end of each session the harness proposes changes to
-  itself from evidence: a recalled page nobody read makes the word that matched
-  it a stopword candidate; a correction the model admitted becomes a draft
+  itself from evidence: a correction the model admitted becomes a draft
   convention for the repo. They land on a page in the vault with checkboxes.
   **Nothing applies itself**: you decide (in chat is fine), then
-  `proposals.py --apply`.
+  `proposals.py --apply`. (Stopword proposals from "a recalled page nobody
+  read" are no longer generated: the model never opens the page, so every
+  injection became one.)
 - **`freshness.py`** checks the facts a note states that the disk can
   answer: every file path a project note mentions is looked up in every
   known repository, on every branch. A path nobody has becomes a `stale`

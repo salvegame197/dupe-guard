@@ -315,6 +315,15 @@ def main() -> int:
     warned = set(st.get("warned", []))
     parts, fresh = [], []
 
+    # The repos this session edited, for the recall hook: a session that
+    # started in ~ and then edited billing-api is a code session from then
+    # on, and the chat exports must stay out of it.
+    repos = set(st.get("repos") or [])
+    seen_now = {str(t[4]) for t in targets if t[4]}
+    repos_changed = not seen_now <= repos
+    if repos_changed:
+        st["repos"] = sorted(repos | seen_now)[:20]
+
     # Repo conventions: once per session, on the first code write.
     if not st.get("conv"):
         root = targets[0][4]
@@ -339,6 +348,7 @@ def main() -> int:
     if parts:
         out(event, "\n\n".join(parts))
         st["warned"] = sorted(warned | set(fresh))
+    if parts or repos_changed:
         save_state(sid, st)
     return 0
 

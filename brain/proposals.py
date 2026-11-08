@@ -3,11 +3,16 @@
 proposals — the harness proposes changes to itself; a human approves.
 
 Every proposal comes from objective evidence in a session, never opinion:
-  - recall injected a page nobody read  -> the term that matched the title
-                                           becomes a stopword candidate
   - the user corrected the model and the
     model admitted it                   -> the user's words become a draft
                                            convention for the repo
+
+The `stopword` category (a term that matched the title of an injected page
+the model did not open) is no longer generated, since 2026-11-08: the model
+never opens the page (0 in 1,145 injections, measured), so EVERY injection
+became a proposal: 486 pending, 4 approved in seven weeks. The recall line
+("N injections, M with a page read") is still written as information, and
+`--apply` still honours a `stopword` line someone writes by hand.
 
 Nothing applies itself. Proposals go to a page in the vault with checkboxes:
 `[x]` + `proposals.py --apply` applies; `[-]` rejects. When a category's
@@ -29,15 +34,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from brain.core import (DATA, HOME_DIR, LABELS, RECALL_MARKS, fold,       # noqa: E402
-                        injected_context, labels, load_config)
+                        injected_context, is_dataless, labels, load_config)
 
 MANUAL_STOPWORDS = DATA / "recall-stopwords.json"
 CONV_DIR = HOME_DIR / "conventions"
 
-TERMS = re.compile(r"(?:%s): (.+?) —" % "|".join(re.escape(l["recall_search"])
-                                               for l in LABELS.values()))
 TITLE = re.compile(r"^\*\*(.+?)\*\* \(", re.M)
-MIN_TERM = 4
 
 # The user correcting the model, written the way people actually write.
 CORRECTION = {
@@ -59,10 +61,6 @@ ADMISSION = {
            r"|tem razao|tem razão|esta certo|está certo|eu que (errei|inventei|confundi)|foi erro meu"
            r"|me enganei|eu confundi|retiro o que)\b"),
 }
-
-
-def words(s):
-    return {w for w in re.findall(r"[a-z0-9_]+", fold(s)) if len(w) >= MIN_TERM}
 
 
 def events(path):
@@ -120,15 +118,14 @@ def generate(transcript, sid, cwd, cfg):
     props, info = [], []
     repo = git_root_name(cwd) if cwd else ""
 
-    # --- recall: a term that matched the title of a page nobody read
-    bad, good = {}, set()
+    # --- recall: how many injections, how many followed by a Read of the
+    # page. Information only; it no longer proposes stopwords (see the
+    # module docstring).
     injections = read = 0
     for i, (ts, k, c) in enumerate(ev):
         if k != "recall":
             continue
         injections += 1
-        m = TERMS.search(c)
-        terms = {fold(t.strip()) for t in (m.group(1).split(",") if m else [])}
         titles = TITLE.findall(c)
         opened = set()
         for _, k2, d2 in ev[i + 1:]:
@@ -138,20 +135,6 @@ def generate(transcript, sid, cwd, cfg):
                 opened.add(fold(os.path.splitext(os.path.basename(d2["path"]))[0]))
         if any(fold(t) in opened for t in titles):
             read += 1
-        for t in titles:
-            culprits = terms & words(t)
-            if fold(t) in opened:
-                good |= culprits
-            else:
-                for w in culprits:
-                    bad.setdefault(w, []).append(t)
-    for w, pages in sorted(bad.items(), key=lambda x: -len(x[1])):
-        if w in good:
-            continue
-        ex = "; ".join(f'"{t[:50]}"' for t in pages[:2])
-        props.append({"kind": "stopword", "target": w,
-                      "text": L["proposal_matched"].format(ex=ex)
-                      + (f" ({len(pages)}x)" if len(pages) > 1 else "")})
     if injections:
         info.append(L["proposal_injections"].format(inj=injections, read=read))
 
@@ -187,6 +170,8 @@ def record(props, info, sid, cfg, when=None):
     page = page_path(cfg)
     day = (when or datetime.now()).strftime("%Y-%m-%d")
     short = (sid or "nosession")[:8]
+    if is_dataless(page):
+        return 0            # evicted from disk: reading would block the hook
     if page.exists() and re.search(rf"^## .* · \w+ {re.escape(short)} ",
                                    page.read_text(encoding="utf-8"), re.M):
         return 0
@@ -198,8 +183,9 @@ def record(props, info, sid, cfg, when=None):
             "session. **Nothing applies itself.** Decide in chat, or mark `[x]` to\n"
             "approve and `[-]` to reject; then ask Claude to apply them (the dupe-guard\n"
             "memory skill runs `brain/proposals.py --apply`).\n"
-            "Kinds: `stopword` (recall stops searching for that word), `convention`\n"
-            "(a rule for the repo, injected by the guard).\n\n",
+            "Kinds: `convention` (a rule for the repo, injected by the guard), `stale`\n"
+            "(a path a note cites that no repo has); a hand-written `stopword` line\n"
+            "(recall stops searching for that word) is applied too.\n\n",
             encoding="utf-8")
     n = len(props)
     lines = [f"## {day} · {L['proposal_session']} {short} "
@@ -214,6 +200,13 @@ def record(props, info, sid, cfg, when=None):
     return n
 
 
+def safe_target(target: str) -> bool:
+    """A target is a repo basename or a note name, never a path. The page it
+    comes from lives in the vault and any app can edit it; `../x` or `a/b`
+    would otherwise be written to or searched for outside CONV_DIR."""
+    return bool(target) and not any(c in target for c in ("/", "\\", "..")) and target not in (".",)
+
+
 ITEM = re.compile(r"^- \[(?P<m>[ x\-])\] `(?P<id>[\w-]+)` \*\*(?P<kind>\w+)\*\* "
                   r"`(?P<target>[^`]+)` — (?P<text>.+)$")
 APPLIED = tuple(f"✅ {l['applied']}" for l in LABELS.values())
@@ -221,7 +214,7 @@ APPLIED = tuple(f"✅ {l['applied']}" for l in LABELS.values())
 
 def items(cfg):
     page = page_path(cfg)
-    if not page.exists():
+    if not page.exists() or is_dataless(page):
         return []
     out = []
     for ln in page.read_text(encoding="utf-8").splitlines():
@@ -257,6 +250,9 @@ def apply(cfg):
                 MANUAL_STOPWORDS.parent.mkdir(parents=True, exist_ok=True)
                 MANUAL_STOPWORDS.write_text(json.dumps(sorted(cur), ensure_ascii=False, indent=0))
         elif it["kind"] in ("convention", "convencao"):
+            if not safe_target(it["target"]):
+                print(f"skipped {it['id']}: target {it['target']!r} is not a plain name")
+                continue
             CONV_DIR.mkdir(parents=True, exist_ok=True)
             target = CONV_DIR / f"{it['target']}.md"
             if not target.exists():
@@ -286,7 +282,7 @@ def mark_stale(cfg, it, today) -> bool:
     """Mark the section that names a path the repo no longer has. The mark
     goes right under the heading; nothing is deleted."""
     m = STALE_TEXT.search(it["text"])
-    if not m:
+    if not m or not safe_target(it["target"]):
         return False
     path, section = m.group(1), m.group(2)
     found = [p for p in cfg["vault"].rglob(f"{it['target']}.md") if ".obsidian" not in p.parts]

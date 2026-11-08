@@ -30,7 +30,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.core import DATA, fold, labels, load_config        # noqa: E402
+from brain.core import DATA, fold, is_dataless, labels, load_config, redact   # noqa: E402
 
 QUEUE = DATA / "distill-queue.jsonl"
 ERRORS = DATA / "session-log-errors.log"
@@ -48,6 +48,34 @@ PATH_RE = re.compile(rf"[\w][\w./@+-]*\.(?:{CODE_EXT})\b")
 
 # Never "work on the project": the tool's own meta files, dependencies, build.
 NOISE = re.compile(r"(^|/)(node_modules|\.git|dist|build|vendor|\.next|target)/|(^|/)\.claude/")
+
+# Where a rule the model learned goes without the brain: Claude Code's own
+# memory (one note per file, under the session's project folder) and a
+# CLAUDE.md. A session that wrote one of these has already recorded itself.
+CLAUDE_MD = re.compile(r"(^|/)CLAUDE\.md$")
+MEMORY_NOTE = re.compile(r"/memory/[^/]+\.md$")
+
+
+def is_learned(path: str, transcripts=None) -> bool:
+    """A CLAUDE.md anywhere, or a memory note under the projects folder
+    (the configured one, or the default ~/.claude/projects)."""
+    if not path:
+        return False
+    if CLAUDE_MD.search(path):
+        return True
+    if not MEMORY_NOTE.search(path):
+        return False
+    return "/.claude/projects/" in path or (transcripts is not None and path.startswith(str(transcripts) + "/"))
+
+
+def note_error(msg: str) -> None:
+    """A line in the error log the next SessionStart reports. Silent on failure."""
+    try:
+        ERRORS.parent.mkdir(parents=True, exist_ok=True)
+        with ERRORS.open("a", encoding="utf-8") as fh:
+            fh.write(f"\n=== {datetime.now().isoformat()} ===\n{msg}\n")
+    except OSError:
+        pass
 
 
 def note_for(cwd: str, cfg: dict):
@@ -75,7 +103,7 @@ def parse(path: Path) -> dict:
     """Extract only what is verifiable from the transcript: no interpretation."""
     out = {
         "cwd": None, "branch": None, "title": None,
-        "prompts": [], "files": set(), "first_ts": None, "last_ts": None,
+        "prompts": [], "files": set(), "written": set(), "first_ts": None, "last_ts": None,
         "turns": 0,
         # Tokens per session. Transcripts expire and usage dashboards only
         # look back so far, so this is the one place the number survives.
@@ -126,6 +154,7 @@ def parse(path: Path) -> dict:
                     if name in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
                         if inp.get("file_path"):
                             out["files"].add(inp["file_path"])
+                            out["written"].add(inp["file_path"])
                     elif name == "Bash":
                         # Edits often happen through sed or heredocs inside
                         # Bash, where no Edit tool_use ever appears. Without
@@ -133,6 +162,13 @@ def parse(path: Path) -> dict:
                         for m in PATH_RE.findall(inp.get("command") or ""):
                             out["files"].add(m)
     return out
+
+
+def learned_files(written, transcripts=None) -> list:
+    """The memory notes and CLAUDE.md files the model wrote through Edit or
+    Write (not Bash: a `cat CLAUDE.md` is not learning). Idempotent and
+    cheap; the paths are what the transcript says, not checked on disk."""
+    return sorted({f for f in written if is_learned(f, transcripts)})
 
 
 def resolve_files(files, cwd: str):
@@ -206,6 +242,7 @@ def main() -> int:
     cwd = info["cwd"] or payload.get("cwd") or ""
     real = [p for p in info["prompts"] if len(p) >= MIN_PROMPT_CHARS]
     files = resolve_files(info["files"], cwd)
+    learned = learned_files(info["written"], cfg["transcripts"])
 
     # Substance filter: a one-question session, or only acknowledgements, does
     # not deserve a line in the vault. Polluting is worse than not recording.
@@ -228,7 +265,17 @@ def main() -> int:
     raw_dir = cfg["vault"] / cfg["raw_dir"]
     raw_dir.mkdir(parents=True, exist_ok=True)
     target = raw_dir / f"{day}.md"
-    if target.exists() and mark in target.read_text(encoding="utf-8", errors="ignore"):
+    # The vault may sit in a cloud drive that evicts files from disk; reading
+    # one then blocks until it is downloaded, and SessionEnd hung on exactly
+    # this line (TimeoutError in session-log-errors.log). Evicted: do not
+    # touch the page, note it in the error log (the next SessionStart shows
+    # it) and still queue the session, which the distiller can reach without
+    # the raw block.
+    evicted = is_dataless(target)
+    if evicted:
+        note_error(f"{target} is not on disk (cloud placeholder); session {sid} was queued "
+                   f"but not written to the vault. On macOS: brctl download \"{target}\"")
+    elif target.exists() and mark in target.read_text(encoding="utf-8", errors="ignore"):
         return 0
 
     lines = [mark, ""]
@@ -246,16 +293,21 @@ def main() -> int:
         lines.append(f"**{L['repo']}:** `{cwd}`")
     lines += [f"**{L['ended_by']}:** {reason}", ""]
 
+    # Requests go through redact(): a key pasted into a prompt must not end
+    # up in the vault (synced to a cloud drive) nor in the queue.
+    shown = [redact(" ".join(p.split()))[:200] for p in real[:MAX_PROMPTS_SHOWN]]
     lines.append(f"**{L['requests']}:**")
-    for p in real[:MAX_PROMPTS_SHOWN]:
-        one = " ".join(p.split())
-        lines.append(f"- {one[:200]}{'…' if len(one) > 200 else ''}")
+    for one, p in zip(shown, real):
+        lines.append(f"- {one}{'…' if len(' '.join(p.split())) > 200 else ''}")
     if len(real) > MAX_PROMPTS_SHOWN:
         lines.append(f"- _(+{len(real) - MAX_PROMPTS_SHOWN} {L['more_requests']})_")
     lines.append("")
 
     if files:
         lines += [f"**{L['files_touched']}:** " + ", ".join(f"`{f}`" for f in files), ""]
+    if learned:
+        shown_learned = ", ".join(f"`{Path(f).name}`" for f in learned[:4])
+        lines += [f"_{L['distill_skipped'].format(files=shown_learned)}_", ""]
     cs = commits(cwd, info["first_ts"] or "")
     if cs:
         lines.append(f"**{L['commits']}:**")
@@ -298,31 +350,42 @@ def main() -> int:
 
     block = "\n".join(lines)
     header = f"---\ntags: {L['raw_tags']}\n---\n\n# {L['sessions_of']} {day}\n\n"
-    try:
-        new = not target.exists()
-        # Append-only is the only safe mode: the vault may sync through a cloud
-        # drive and another session may be ending at the same moment.
-        with target.open("a", encoding="utf-8") as fh:
-            if new:
-                fh.write(header)
-            fh.write(block)
-    except OSError:
-        return 0
+    if not evicted:
+        try:
+            new = not target.exists()
+            # Append-only is the only safe mode: the vault may sync through a
+            # cloud drive and another session may be ending at the same moment.
+            with target.open("a", encoding="utf-8") as fh:
+                if new:
+                    fh.write(header)
+                fh.write(block)
+        except OSError:
+            return 0
 
     # Queue for the expensive distiller. The queue is the contract between the
     # two levels. A session with no note (home, no project) stays in the raw
     # log only: there is nowhere to distill it to.
+    # A session in which the model already wrote a native memory note or a
+    # CLAUDE.md has recorded its own lesson where Claude Code reads it; the
+    # distiller would write the same thing again into the project note. The
+    # row still goes to the queue file, marked `skipped` with the reason, so
+    # the decision is on record (distill.queue ignores it).
     if not note:
         return 0
     try:
         QUEUE.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": when.isoformat(), "session_id": sid, "day": day,
+            "note": note, "orphan": orphan, "cwd": cwd,
+            "transcript": tp, "raw": str(target),
+            # the same 200 redacted chars the raw page shows, never the
+            # whole prompt: the distiller reads the transcript itself
+            "files": files, "prompts": shown,
+        }
+        if learned:
+            row["skipped"] = "wrote " + ", ".join(learned[:6])
         with QUEUE.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps({
-                "ts": when.isoformat(), "session_id": sid, "day": day,
-                "note": note, "orphan": orphan, "cwd": cwd,
-                "transcript": tp, "raw": str(target),
-                "files": files, "prompts": real[:MAX_PROMPTS_SHOWN],
-            }, ensure_ascii=False) + "\n")
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     except OSError:
         pass
     return 0

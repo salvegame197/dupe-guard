@@ -242,12 +242,13 @@ class Brain(BrainCase):
         self.assertFalse(title_hit(["eua"], "Europe and beyond"))
         self.assertFalse(title_hit(["api-producer"], "API of the consumer"))
 
-    def test_recall_logs_every_decision_and_fades_unopened_pages(self):
+    def test_recall_logs_every_decision_and_strength_reads_outcomes(self):
         sys.path.insert(0, str(ROOT))
         from brain.recall import strength_factor
         self.assertEqual(strength_factor("x", {}), 1.0)
-        self.assertLess(strength_factor("x", {"x": {"injected": 5, "opened": 0}}), 1.0)
-        self.assertGreater(strength_factor("x", {"x": {"injected": 5, "opened": 2}}), 1.0)
+        # "injected and never opened" no longer fades a page (ruler changed 2026-11-08)
+        self.assertEqual(strength_factor("x", {"x": {"injected": 5, "opened": 0}}), 1.0)
+        self.assertGreater(strength_factor("x", {"x": {"injected": 5, "touched": 2}}), 1.0)
         self.reindex()
         self.run_py("recall.py", {"prompt": "how should exponential backoff work for invoice retries", "session_id": "lg1"})
         self.run_py("recall.py", {"prompt": "ok go ahead, nothing to see here really", "session_id": "lg1"})
@@ -274,7 +275,11 @@ class Brain(BrainCase):
 
     # --------------------------------------------------------------- proposals
 
-    def test_unread_recall_becomes_a_stopword_proposal_and_apply_silences_it(self):
+    def test_unread_recall_is_counted_but_proposes_no_stopword(self):
+        # Until 2026-11-08 every injection the model did not follow with a
+        # Read became a stopword proposal; the model never opens the page,
+        # so that was every injection (486 pending, 4 approved). The count
+        # is still written as information; the proposal is not.
         self.reindex()
         prompt = "how should exponential backoff work for invoice retries"
         ctx = self.context(self.run_py("recall.py", {"prompt": prompt, "session_id": "p1"}))
@@ -288,15 +293,18 @@ class Brain(BrainCase):
                      message={"role": "assistant", "content": [{"type": "text", "text": "Done."}]})]
         tp.write_text("".join(rows))
         out = self.run_py("proposals.py", args=["--generate", str(tp), "p1", "--record"])
-        self.assertIn("stopword", out)
+        self.assertNotIn("stopword", out)
+        self.assertIn("1 injections, 0 with a page read", out)
         page = self.vault / "Harness Proposals.md"
         text = page.read_text()
-        self.assertIn("- [ ] `st-p1-", text)
-        # approve every stopword, as the user would in chat or in the editor
-        page.write_text(text.replace("- [ ] `st-", "- [x] `st-"))
+        self.assertNotIn("- [ ] `st-p1-", text)
+        self.assertIn("ℹ️ recall: 1 injections", text)
+        # A stopword line written by hand is still applied: the category is
+        # not generated, not forbidden.
+        page.write_text(text + "- [x] `st-hand-1` **stopword** `backoff` — by hand\n")
         self.assertIn("applied", self.run_py("proposals.py", args=["--apply"]))
-        self.assertIn("✅ applied", page.read_text())
-        self.assertIsNone(self.context(self.run_py("recall.py", {"prompt": prompt, "session_id": "p2"})))
+        ctx = self.context(self.run_py("recall.py", {"prompt": prompt, "session_id": "p2"}))
+        self.assertNotIn("backoff,", ctx.split("\n")[2])      # the search line no longer carries the word
 
     def test_an_admitted_correction_becomes_a_convention_proposal(self):
         rows = [line(type="user", timestamp="2026-09-20T10:01:00Z",
@@ -649,8 +657,15 @@ class Etapa5(BrainCase):
         self.assertIsNone(self.context(self.run_py("recall.py", {"prompt": "que relogio eu quis vender mesmo", "session_id": "q1"})))
         out = self.run_py("questions.py", args=["--run"])
         self.assertIn("generated for", out)
-        self.reindex()                                   # ingests the questions
-        ctx = self.context(self.run_py("recall.py", {"prompt": "que relogio eu quis vender mesmo", "session_id": "q2"}))
+        # Offline since 2026-11-08: a plain reindex leaves the questions
+        # out; only --with-questions ingests them, for the self-test.
+        self.reindex()
+        self.assertIsNone(self.context(self.run_py("recall.py", {"prompt": "que relogio eu quis vender mesmo", "session_id": "q2"})))
+        r = subprocess.run([sys.executable, str(BRAIN / "questions.py"), "--eval", "5"],
+                           capture_output=True, text=True, env=self.env)
+        self.assertEqual(r.returncode, 1); self.assertIn("--with-questions", r.stderr)
+        self.run_py("ksearch.py", args=["--reindex", "--with-questions"])
+        ctx = self.context(self.run_py("recall.py", {"prompt": "que relogio eu quis vender mesmo", "session_id": "q3"}))
         self.assertIsNotNone(ctx)
         self.assertIn("Apple Watch", ctx)
         self.assertIn("generated for 0", self.run_py("questions.py", args=["--run"]))     # incremental
@@ -791,9 +806,15 @@ class Catalog(BrainCase):
         self.assertEqual(catalog.resolve("Qual é o meu relógio?", cfg), [])
         self.assertEqual([e["id"] for e, _, _ in catalog.resolve("Que combustível o Fiat Argo 2024 usa?", cfg)],
                          ["vehicle-fiat-argo-2024"])
-        res = recall.by_authority([], "qual é o meu carro?", cfg)
-        self.assertEqual(len(res), 1); self.assertIn("gasolina aditivada", res[0]["snippets"][0])
-        self.assertEqual(res[0]["authority"], "vehicle-fiat-argo-2024")
+        # The type door: a bare noun of an owned type opens it in a chat
+        # session and not in a code session; a possessive opens it in both.
+        self.assertEqual([e["id"] for e, _, _ in catalog.resolve("o carro usa gasolina?", cfg)],
+                         ["vehicle-fiat-argo-2024"])
+        self.assertEqual(catalog.resolve("o carro usa gasolina?", cfg, code_session=True), [])
+        self.assertEqual([e["id"] for e, _, _ in catalog.resolve("meu carro usa gasolina?", cfg, code_session=True)],
+                         ["vehicle-fiat-argo-2024"])
+        # Since 2026-11-08 the catalog no longer injects: no card in recall.
+        self.assertFalse(hasattr(recall, "by_authority"))
 
     def test_catalog_reads_only_the_header(self):
         from brain import catalog

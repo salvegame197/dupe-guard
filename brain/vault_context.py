@@ -37,7 +37,9 @@ def inventory(vault: Path):
 
 
 def listing(vault: Path, mds, subdir: str, depth: int, limit: int):
-    """Page titles under a folder, relative to it."""
+    """Page titles under a folder, relative to it. Over `limit`, the most
+    recently modified pages stay: the first twenty by alphabet say nothing
+    about what the person is working on; the last twenty touched do."""
     base = os.path.join(str(vault), subdir)
     if not os.path.isdir(base):
         return []
@@ -47,8 +49,15 @@ def listing(vault: Path, mds, subdir: str, depth: int, limit: int):
             continue
         r = os.path.relpath(p, base)
         if r.count(os.sep) < depth:
-            out.append(r[:-3])
-    return sorted(out)[:limit]
+            out.append((p, r[:-3]))
+    if len(out) > limit:
+        def mtime(item):
+            try:
+                return os.path.getmtime(item[0])
+            except OSError:
+                return 0.0
+        out = sorted(out, key=mtime, reverse=True)[:limit]
+    return sorted(r for _, r in out)
 
 
 def auto_sections(vault: Path, cfg):
@@ -98,13 +107,14 @@ def main() -> int:
             lines += [f"- {p}" for p in pages]
         lines.append("")
 
-    lines.append(L["ctx_when"])
-    lines += [l.replace("{note_language}", cfg["note_language"]) for l in L["ctx_when_lines"]]
+    # No "when to use it" block: the user's global CLAUDE.md already says
+    # when to search the vault and who writes to it; a second copy here was
+    # ~250 tokens per session and, on writing, contradicted the distiller.
 
     # session_log writes here when it fails. Saying so in the next session is
     # what keeps the leak from coming back silently.
     if ERRORS.exists() and time.time() - ERRORS.stat().st_mtime < 7 * 86400:
-        lines += ["", L["ctx_failed_title"], L["ctx_failed_body"].format(path=ERRORS)]
+        lines += [L["ctx_failed_title"], L["ctx_failed_body"].format(path=ERRORS)]
 
     print(hook_output("SessionStart", "\n".join(lines)))
     return 0

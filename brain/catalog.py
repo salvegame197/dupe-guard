@@ -4,14 +4,20 @@
 Each vault page carries a closed-schema header (frontmatter). A derived
 catalog is compiled from the headers alone (first bytes of each file), and
 an authority file names the things in the user's life once, with the
-everyday words they go by. Recall consults authority and catalog BEFORE the
-keyword index: "what is my car" resolves to an entity of type vehicle owned
-by the user, never to a word in a page body.
+everyday words they go by. "what is my car" resolves to an entity of type
+vehicle owned by the user, never to a word in a page body.
+
+An OFFLINE tool since 2026-11-08: the reindex still compiles the catalog,
+but recall no longer injects a card from it. Measured over 28 days, the card
+entered 296 times, always on top, and never about code; the type-noun door
+("api", "produto", "cliente") fired on the most ordinary words of a dev
+prompt. `--resolve` shows what a prompt would have matched.
 
     catalog.py --rebuild            compile the catalog from the headers
     catalog.py --backfill [-n N]    write headers for pages that lack one (local model)
     catalog.py --check              validate every header, report violations
     catalog.py --resolve "prompt"   show what a prompt resolves to
+    catalog.py --resolve "prompt" --code   the same, in code-session mode
 """
 import argparse
 import json
@@ -247,9 +253,25 @@ def authority_path(cfg) -> Path:
     return Path(cfg["vault"]) / AUTHORITY_NAME
 
 
-def load_authority(cfg) -> dict:
+class AuthorityUnavailable(OSError):
+    """The authority file is a cloud placeholder: reading it would block, and
+    treating it as empty would let the next save wipe every entity."""
+
+
+def load_authority(cfg, writer: bool = False) -> dict:
+    """The authority by id. A reader gets {} when the file is evicted from
+    disk (and a line on stderr); a `writer` (backfill, relink) gets
+    AuthorityUnavailable instead, because it would save over the real file."""
+    path = authority_path(cfg)
+    if is_dataless(path):
+        if writer:
+            raise AuthorityUnavailable(f"{path} is not on disk (cloud placeholder); "
+                                       f"run: brctl download \"{path}\"")
+        print(f"catalog: {path.name} not on disk (cloud placeholder), authority treated as empty",
+              file=sys.stderr)
+        return {}
     try:
-        data = json.loads(authority_path(cfg).read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return {e["id"]: e for e in data.get("entities", []) if e.get("id")}
     except (OSError, ValueError, TypeError, AttributeError):
         return {}
@@ -333,13 +355,17 @@ def load_catalog():
 POSSESSIVE = {"pt": ("meu", "minha", "meus", "minhas", "tenho", "comprei"), "en": ("my", "mine", "i have", "i bought")}
 
 
-def resolve(prompt: str, cfg: dict, authority=None, catalog=None):
+def resolve(prompt: str, cfg: dict, authority=None, catalog=None, code_session: bool = False):
     """[(entity, pages, claims)] for a prompt, by authority first.
 
     Two doors: a variant or canonical name in the prompt names the entity
     outright; an everyday noun of a TYPE ("carro") plus a possessive picks
     the user's entities of that type, or all of that type when none is
-    owned. No score, no threshold: it matches or it does not."""
+    owned. No score, no threshold: it matches or it does not.
+
+    In a `code_session` the type door only opens with a possessive: "meu
+    carro" still resolves, a bare "api" or "cliente" in a prompt about code
+    does not (those two words alone brought Decolar and a wine)."""
     authority = load_authority(cfg) if authority is None else authority
     catalog = load_catalog() if catalog is None else catalog
     if not authority:
@@ -354,7 +380,7 @@ def resolve(prompt: str, cfg: dict, authority=None, catalog=None):
     nouns = type_nouns(cfg["languages"])
     asked_types = {nouns[w] for w in words if w in nouns}
     possessive = any(p in text for lang in cfg["languages"] for p in POSSESSIVE.get(lang, ()))
-    if asked_types:
+    if asked_types and (possessive or not code_session):
         for t in asked_types:
             of_type = [e for e in authority.values() if e.get("type") == t]
             mine = [e for e in of_type if e.get("owner") == USER]
@@ -407,9 +433,18 @@ def ask_model(title: str, text: str, cfg: dict):
                                   title=title) + text[:MAX_CHARS]
     if s.get("writer") == "claude":
         from brain import distill
+        from brain.core import worker_dir
         try:
-            r = subprocess.run([distill.claude_bin(), "-p", "--model", s.get("claude_model", "haiku")],
-                               input=prompt, capture_output=True, text=True, timeout=240, env=distill.child_env())
+            # Same guarded child as the distiller: binary from config, no
+            # tools, no hooks, its own working folder. The page text goes in
+            # as data: a sentence in a note must not become a command.
+            fenced = (PROMPTS[lang].format(kinds="|".join(KINDS), types="|".join(TYPES),
+                                           preds="|".join(PREDICATES), title=title)
+                      + distill.as_data(text[:MAX_CHARS]))
+            env = distill.child_env()
+            r = subprocess.run(distill.child_command(s.get("claude_model", "haiku"), cfg, env),
+                               input=fenced, cwd=str(worker_dir()),
+                               capture_output=True, text=True, timeout=240, env=env)
             m = re.search(r"\{.*\}", r.stdout or "", re.S)
             return json.loads(m.group(0)) if m else None
         except (subprocess.SubprocessError, OSError, ValueError):
@@ -473,7 +508,7 @@ def backfill(cfg, limit=0, prefix="", force=False, log=print, workers=1):
     become candidates; a candidate seen on `promote_at` pages (or owned by
     the user) enters the authority. Pages are rewritten in place."""
     s = cfg_settings(cfg)
-    authority = load_authority(cfg)
+    authority = load_authority(cfg, writer=True)
     candidates = load_candidates()
     done = failed = 0
     t0 = time.time()
@@ -601,7 +636,7 @@ def relink(cfg, log=print):
     and renamed after pages were written; an id nobody has any more is
     matched by its slug against the variants, and "user" is never an
     entity, only a subject."""
-    authority = load_authority(cfg)
+    authority = load_authority(cfg, writer=True)
     merge_cards(authority)
     by_slug = {}
     for e in authority.values():
@@ -657,6 +692,7 @@ def main() -> int:
     ap.add_argument("--backfill", action="store_true")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--resolve", metavar="PROMPT")
+    ap.add_argument("--code", action="store_true", help="resolve as in a code session (type nouns need a possessive)")
     ap.add_argument("--relink", action="store_true", help="re-point headers at merged/renamed cards")
     ap.add_argument("-n", "--limit", type=int, default=0)
     ap.add_argument("--prefix", default="")
@@ -664,14 +700,18 @@ def main() -> int:
     ap.add_argument("--workers", type=int, default=1, help="parallel model calls")
     a = ap.parse_args()
     cfg = load_config()
-    if a.backfill:
-        backfill(cfg, a.limit, a.prefix, a.force, workers=a.workers)
-        rows, problems, skipped = rebuild(cfg)
-        print(f"catalog: {len(rows)} page(s), {len(problems)} with problems, {skipped} without any header")
-    if a.relink:
-        relink(cfg)
-        rows, problems, skipped = rebuild(cfg)
-        print(f"catalog: {len(rows)} page(s), {len(problems)} with problems")
+    try:
+        if a.backfill:
+            backfill(cfg, a.limit, a.prefix, a.force, workers=a.workers)
+            rows, problems, skipped = rebuild(cfg)
+            print(f"catalog: {len(rows)} page(s), {len(problems)} with problems, {skipped} without any header")
+        if a.relink:
+            relink(cfg)
+            rows, problems, skipped = rebuild(cfg)
+            print(f"catalog: {len(rows)} page(s), {len(problems)} with problems")
+    except AuthorityUnavailable as e:
+        print(f"catalog: aborted, {e}", file=sys.stderr)
+        return 1
     if a.rebuild or a.check:
         rows, problems, skipped = rebuild(cfg)
         print(f"catalog: {len(rows)} page(s) with a header, {len(problems)} with problems, {skipped} without any header")
@@ -679,7 +719,7 @@ def main() -> int:
             for rel, probs in sorted(problems.items()):
                 print(f"  {rel}: {', '.join(probs)}")
     if a.resolve:
-        for e, pages, claims in resolve(a.resolve, cfg):
+        for e, pages, claims in resolve(a.resolve, cfg, code_session=a.code):
             print(f"{e['id']} ({e['type']}, owner={e.get('owner')}) -> {[p['id'] for p in pages]}")
             for c in claims:
                 print(f"    {c}")

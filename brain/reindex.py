@@ -74,8 +74,9 @@ def main() -> int:
     try:
         subprocess.run([sys.executable, str(KSEARCH), "--reindex"],
                        capture_output=True, timeout=120)
-        # Memory strength rides along: what was injected and opened since
-        # the last pass changes which pages recall should trust.
+        # Memory strength rides along: what was injected and then touched
+        # or corrected since the last pass changes which pages recall
+        # should trust (~7 s over 186 transcripts, inside the timeout).
         subprocess.run([sys.executable, str(KSEARCH.parent / "hit_rate.py"), "--strength"],
                        capture_output=True, timeout=120)
         if (load_config().get("embeddings") or {}).get("enabled"):
