@@ -27,7 +27,10 @@ it:
 `--strength` writes brain/recall-strength.json from (a) and (c); the formula
 is in brain/recall.py:strength_factor. The RECALL LOG block reads
 brain/recall-log.jsonl instead: decisions by kind, session mode and the
-injected pages by vault folder.
+injected pages by vault folder. The LEARNED block reads
+brain/aprendido-log.jsonl (brain/learned.py): lines written from the user's
+corrections, how many are still in the file, how many reached a commit,
+how many were deleted (the user's "no").
 
 Usage:
   hit_rate.py                  every transcript
@@ -41,7 +44,9 @@ import json
 import os
 import re
 import statistics
+import subprocess
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -471,6 +476,79 @@ def log_report(log_path: Path):
     return decisions, modes, folders, items
 
 
+def learned_report(log_path: Path, min_age_days: int = 7):
+    """What became of the lines brain/learned.py wrote: by status, and for
+    the written ones whether the line is still in its file (survived),
+    whether it is in the committed CLAUDE.md (approved by the commit the
+    user makes anyway), or gone (rejected by deleting it). A line older
+    than `min_age_days` that is still there is the stable count."""
+    from brain.learned import normalized
+    status = Counter()
+    rows = []
+    if not log_path.exists():
+        return status, rows
+    with log_path.open(encoding="utf-8") as f:
+        for raw in f:
+            try:
+                d = json.loads(raw)
+            except ValueError:
+                continue
+            status[d.get("status") or "?"] += 1
+            if d.get("status") == "written" and d.get("path") and d.get("line"):
+                rows.append(d)
+    head_cache = {}
+    out = []
+    for d in rows:
+        path = Path(d["path"])
+        key = normalized(d["line"])
+        try:
+            present = key in {normalized(l) for l in path.read_text(encoding="utf-8", errors="ignore").splitlines()}
+        except OSError:
+            present = False
+        committed = None
+        if d.get("kind") == "claude_md":
+            root = str(path.parent)
+            if root not in head_cache:
+                try:
+                    r = subprocess.run(["git", "-C", root, "show", "HEAD:CLAUDE.md"],
+                                       capture_output=True, text=True, timeout=5)
+                    head_cache[root] = {normalized(l) for l in r.stdout.splitlines()} if r.returncode == 0 else set()
+                except (OSError, subprocess.SubprocessError):
+                    head_cache[root] = set()
+            committed = key in head_cache[root]
+        age = (time.time() - (d.get("ts") or time.time())) / 86400
+        out.append({"repo": d.get("repo"), "kind": d.get("kind"), "present": present,
+                    "committed": committed, "old": age >= min_age_days, "line": d["line"]})
+    return status, out
+
+
+def print_learned(log_path: Path):
+    status, rows = learned_report(log_path)
+    total = sum(status.values())
+    if not total:
+        return
+    print()
+    print(f"LEARNED FROM CORRECTIONS ({total} triads logged, brain/learned.py)")
+    for k in ("written", "pending", "duplicate", "self-recorded", "capped", "no-destination", "expired"):
+        if status.get(k):
+            print(f"  {k:<22} {status[k]:>6}")
+    n = len(rows)
+    if n:
+        survived = sum(r["present"] for r in rows)
+        old = [r for r in rows if r["old"]]
+        committed = [r for r in rows if r["kind"] == "claude_md"]
+        print(f"  still in the file      {survived:>6}   {pct(survived, n)} of {n} written")
+        print(f"  deleted (rejected)     {n - survived:>6}   {pct(n - survived, n)}")
+        if old:
+            print(f"  older than 7 days      {len(old):>6}   {sum(r['present'] for r in old)} still there")
+        if committed:
+            ok = sum(bool(r["committed"]) for r in committed)
+            print(f"  CLAUDE.md lines        {len(committed):>6}   {ok} in HEAD (approved by a commit)")
+        by_repo = Counter((r["repo"], r["present"]) for r in rows)
+        repos = sorted({r for r, _ in by_repo})
+        print("  by repo                " + ", ".join(f"{r} {by_repo[(r, True)]}/{by_repo[(r, True)] + by_repo[(r, False)]}" for r in repos))
+
+
 def print_table(rows, key_label, base, top, with_base=True):
     head = f"  {'inj':>4} {'lead':>4} {'touch':>5} {'open':>4} {'cite':>4} {'corr':>4} "
     head += f"{'base':>6} " if with_base else ""
@@ -579,6 +657,7 @@ def main():
             print(f"  pages injected         {items:>6}   by vault folder:")
             for folder, n in folders.most_common(8):
                 print(f"    {folder:<20} {n:>6}   {pct(n, items)}")
+        print_learned(DATA / "aprendido-log.jsonl")
     return 0
 
 

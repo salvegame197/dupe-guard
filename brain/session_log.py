@@ -244,6 +244,17 @@ def main() -> int:
     files = resolve_files(info["files"], cwd)
     learned = learned_files(info["written"], cfg["transcripts"])
 
+    # A correction the user made in this session becomes a draft line in the
+    # repo's CLAUDE.md or the native memory (brain/learned.py). Before the
+    # substance filter: one "no, it is X" with an edit is substance even in
+    # a two-prompt session. Never lets a failure reach the exit.
+    taught = {}
+    try:
+        from brain import learned as learned_mod
+        taught = learned_mod.run(tp, sid, cwd, cfg)
+    except Exception:
+        taught = {}
+
     # Substance filter: a one-question session, or only acknowledgements, does
     # not deserve a line in the vault. Polluting is worse than not recording.
     if len(real) < MIN_PROMPTS and not (real and files):
@@ -308,6 +319,11 @@ def main() -> int:
     if learned:
         shown_learned = ", ".join(f"`{Path(f).name}`" for f in learned[:4])
         lines += [f"_{L['distill_skipped'].format(files=shown_learned)}_", ""]
+    if taught.get("written") or taught.get("pending"):
+        where = {l["path"] for l in taught.get("lines", []) if l["status"] in ("written", "pending")}
+        lines += [f"**{L['learned_written']}:** {taught.get('written', 0)}"
+                  + (f" (+{taught['pending']} {L['learned_pending']})" if taught.get("pending") else "")
+                  + " → " + ", ".join(f"`{Path(p).name}`" for p in sorted(where)), ""]
     cs = commits(cwd, info["first_ts"] or "")
     if cs:
         lines.append(f"**{L['commits']}:**")

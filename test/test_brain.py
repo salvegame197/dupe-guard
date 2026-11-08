@@ -306,7 +306,10 @@ class Brain(BrainCase):
         ctx = self.context(self.run_py("recall.py", {"prompt": prompt, "session_id": "p2"}))
         self.assertNotIn("backoff,", ctx.split("\n")[2])      # the search line no longer carries the word
 
-    def test_an_admitted_correction_becomes_a_convention_proposal(self):
+    def test_an_admitted_correction_is_no_longer_a_convention_proposal(self):
+        # Since 2026-11-08 the correction becomes a line in the repo's
+        # CLAUDE.md or the native memory (brain/learned.py, test_piece4),
+        # not a checkbox on the proposals page.
         rows = [line(type="user", timestamp="2026-09-20T10:01:00Z",
                      message={"role": "user", "content": "why did you say the job runs hourly? it is nightly"}),
                 line(type="assistant", timestamp="2026-09-20T10:01:20Z",
@@ -314,8 +317,7 @@ class Brain(BrainCase):
         tp = self.tmp / "c1.jsonl"
         tp.write_text("".join(rows))
         out = self.run_py("proposals.py", args=["--generate", str(tp), "c1", str(self.repo)])
-        self.assertIn("convention", out)
-        self.assertIn("billing-api", out)
+        self.assertNotIn("convention", out)
 
     # ----------------------------------------------------------------- distill
 
@@ -535,16 +537,13 @@ class Etapa3(BrainCase):
         self.run_py("conventions.py", args=["--tally", str(self.transcript_with(edit=False))])
         self.assertEqual(f.read_text(), before)
 
-    def test_a_new_rule_from_a_proposal_starts_at_two(self):
-        rows = [line(type="user", timestamp="2026-09-20T10:01:00Z",
-                     message={"role": "user", "content": "why did you say the job runs hourly? it is nightly"}),
-                line(type="assistant", timestamp="2026-09-20T10:01:20Z",
-                     message={"role": "assistant", "content": [{"type": "text", "text": "You're right, I made that up."}]})]
-        tp = self.tmp / "n.jsonl"
-        tp.write_text("".join(rows))
-        self.run_py("proposals.py", args=["--generate", str(tp), "n1", str(self.repo), "--record"])
+    def test_a_convention_line_still_on_the_page_is_applied_at_two(self):
+        # The kind is not generated any more; a line already on the page
+        # (the 20 pending ones) is still honoured by --apply.
         page = self.vault / "Harness Proposals.md"
-        page.write_text(page.read_text().replace("- [ ] `co-", "- [x] `co-"))
+        page.write_text("# Harness Proposals\n\n## 2026-09-20 · session n1 (1 proposal)\n\n"
+                        "- [x] `co-n1-1` **convention** `billing-api` — \"why did you say the job runs "
+                        "hourly? it is nightly\" — 10:01, model: \"You're right\"\n")
         self.run_py("proposals.py", args=["--apply"])
         self.assertIn("<!-- votes:2 -->", (self.home / "conventions" / "billing-api.md").read_text())
 

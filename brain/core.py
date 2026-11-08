@@ -79,6 +79,13 @@ DEFAULTS = {
     # about the person's life; in a session about code they only match by
     # accident, and they were 59 % of what was injected. Empty = mute none.
     "code_session_mute": ["Claude Web/"],
+    # A correction the user made (and the model accepted and acted on) becomes
+    # one draft line in the repo's CLAUDE.md (section "Aprendido (revisar)")
+    # when the repo is the user's own, or in the native memory of that
+    # working directory otherwise (brain/learned.py). `own_remotes` lists
+    # remote prefixes that mean "my repo" ("github.com/me/"); a repo with no
+    # remote is always the user's. Runs at SessionEnd, no model call.
+    "learned": {"enabled": True, "own_remotes": [], "max_per_session": 3},
     "distill_model": "sonnet",
     "distill_samples": 3,
     # Automatic distilling. Off by default: it spends the user's plan. When
@@ -251,6 +258,19 @@ LABELS = {
         "no_longer_exists": "no longer exists in the repository (checked automatically)",
         "rule_retired": "rule retired, its counter reached zero (misled more than it helped)",
         "conventions": "Convention votes", "retired": "retired",
+        "learned_section": "Learned (review)",
+        "learned_session": "session",
+        "learned_do": "do",
+        "learned_dont": "do not",
+        "learned_memory_desc": "Draft rules from the user's corrections in {repo}; deleting a line rejects it",
+        "learned_pointer": "Learned from corrections: {repo}",
+        "learned_written": "Learned from corrections",
+        "learned_pending": "waiting for a clean CLAUDE.md",
+        "rules_section": "Rules in force",
+        "rules_superseded": "Superseded rules",
+        "rules_superseded_on": "superseded on",
+        "rules_cap_reason": "fell off the cap of {n}",
+        "ctx_rules_header": "Rules in force for {note} (from the vault note; the narrative is below in the note)",
         "ctx_header": "# SECOND BRAIN (vault) — available in this session",
         "ctx_path": "Path",
         "ctx_content": "Content: {n} .md pages, {kb:.0f} KB (~{ktok} thousand tokens in total).",
@@ -290,6 +310,19 @@ LABELS = {
         "no_longer_exists": "não existe mais no repositório (conferido automaticamente)",
         "rule_retired": "regra aposentada, o contador chegou a zero (atrapalhou mais do que ajudou)",
         "conventions": "Votos nas convencoes", "retired": "aposentada(s)",
+        "learned_section": "Aprendido (revisar)",
+        "learned_session": "sessão",
+        "learned_do": "fazer",
+        "learned_dont": "não fazer",
+        "learned_memory_desc": "Regras rascunhadas das correções do usuário em {repo}; apagar a linha rejeita",
+        "learned_pointer": "Aprendido por correção: {repo}",
+        "learned_written": "Aprendido por correção",
+        "learned_pending": "esperando o CLAUDE.md ficar commitado",
+        "rules_section": "Regras em vigor",
+        "rules_superseded": "Regras superadas",
+        "rules_superseded_on": "superada em",
+        "rules_cap_reason": "saiu do teto de {n}",
+        "ctx_rules_header": "Regras em vigor de {note} (da nota do vault; a narrativa está abaixo na nota)",
         "ctx_header": "# SECOND BRAIN (vault Obsidian) — disponivel nesta sessao",
         "ctx_path": "Caminho",
         "ctx_content": "Conteudo: {n} paginas .md, {kb:.0f} KB (~{ktok} mil tokens no total).",

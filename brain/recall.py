@@ -17,6 +17,9 @@ Design rules (silence is the default):
   - The native memory of the session's own project folder is never injected:
     Claude Code already loads it. Memory from OTHER folders is, labelled with
     where it came from ("memory of gate-control").
+  - When the note of the session's repo has a "Rules in force" section (the
+    distiller keeps it at the top, brain/rules.py), the snippet comes from
+    there; for any other note, from there only when a term matches in it.
   - Only injects above a score threshold. A weak result is worse than none: it
     spends context and pulls attention away.
   - Never repeats what it already injected in the same session.
@@ -218,6 +221,42 @@ def own_memory_prefix(cwd: str) -> str:
     return f"memory/{project_folder_name(cwd)}/" if cwd else ""
 
 
+def project_note(cwd: str, cfg) -> str:
+    """The vault note the session's cwd maps to (alias, or a note with the
+    folder's name), folded; "" when none."""
+    if not cwd:
+        return ""
+    try:
+        from brain.session_log import note_for
+        name, orphan = note_for(cwd, cfg)
+    except Exception:
+        return ""
+    return fold(name) if name and not orphan else ""
+
+
+def rules_turn(doc: dict):
+    """The index turn that is the note's "Rules in force" section, or None."""
+    from brain.rules import IN_FORCE
+    heads = tuple(f"## {h}" for h in IN_FORCE)
+    return next((t for t in doc.get("turns") or () if t["t"].startswith(heads)), None)
+
+
+def snippets_for(doc: dict, best, terms, is_project: bool) -> list:
+    """The snippets to show for a page: the rules section first when this
+    is the note of the session's repo, or when a term matches inside it;
+    otherwise the best-matching turn as before. The rules text loses its
+    heading and the `([[note#section]])` links to fit the snippet."""
+    from brain import ksearch
+    out = [ksearch.snippet(t["t"], terms) for t in best[:MAX_SNIPPETS]]
+    turn = rules_turn(doc) if doc.get("src") == "vault" else None
+    if turn:
+        text = re.sub(r"^## [^-]*- ", "- ", turn["t"], count=1)
+        text = re.sub(r" \(\[\[[^\]]+\]\]\)", "", text)      # the links name the note: not a match
+        if is_project or any(x in fold(text) for x in terms):
+            out.insert(0, ksearch.snippet(text, terms))
+    return out[:MAX_SNIPPETS]
+
+
 def terms_from(prompt: str, languages):
     """The terms with the most power to discriminate."""
     from brain.ksearch import STOPWORDS
@@ -396,11 +435,12 @@ def recall(prompt: str, session_id: str, cfg: dict, cwd: str = ""):
 
     found = [x for x in found if audible(x[1]["src"], x[1]["id"])]
     table = strength_table()
+    mine = project_note(cwd, cfg)
     results = [{"score": round(weighted(s, d, cfg, terms) * strength_factor(d["id"], table), 1),
                 "source": d["src"], "title": d["title"], "qhit": d.get("_qhit", 0.0),
                 "desc": d.get("desc", ""), "kind": d.get("kind", ""),
                 "project": d["project"], "date": d["date"], "id": d["id"],
-                "snippets": [ksearch.snippet(t["t"], terms) for t in b[:MAX_SNIPPETS]]}
+                "snippets": snippets_for(d, b, terms, bool(mine) and d["src"] == "vault" and fold(d["title"]) == mine)}
                for s, d, b in found[:12]]
     results = [r for r in hybrid(results, prompt, terms, cfg, table) if audible(r["source"], r["id"])]
     results.sort(key=lambda x: -x["score"])

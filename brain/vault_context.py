@@ -9,6 +9,10 @@ tells the model WHAT exists and HOW to search; the search itself (grep) takes
 
 Sections come from the config ("context_sections"). Without it, every
 top-level folder of the vault is listed.
+
+When the session's cwd maps to a project note that has a "Rules in force"
+section (brain/rules.py), those lines are injected whole: they are the
+first screen of the note, written to be read before the first prompt.
 """
 import json
 import os
@@ -17,8 +21,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from brain.core import hook_output, labels, load_config                 # noqa: E402
-from brain.session_log import ERRORS                                     # noqa: E402
+from brain.core import hook_output, is_dataless, labels, load_config    # noqa: E402
+from brain.session_log import ERRORS, note_for                           # noqa: E402
 
 
 def inventory(vault: Path):
@@ -71,11 +75,36 @@ def auto_sections(vault: Path, cfg):
     return out
 
 
-def main() -> int:
+def rules_block(cwd: str, cfg, L) -> list:
+    """The "Rules in force" lines of the cwd's project note, with a header,
+    or [] (no note, no section, note not on disk)."""
+    if not cwd:
+        return []
     try:
-        sys.stdin.read()
+        from brain.distill import note_path
+        from brain.rules import lines_in_force
+        name, orphan = note_for(cwd, cfg)
+        if not name or orphan:
+            return []
+        note, err = note_path(cfg["vault"], name)
+        if err or is_dataless(note):
+            return []
+        lines = lines_in_force(note.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return []
+    if not lines:
+        return []
+    return [f"## {L['ctx_rules_header'].format(note=name)}", *lines, ""]
+
+
+def main() -> int:
+    cwd = ""
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        cwd = payload.get("cwd") or ""
     except Exception:
         pass
+    cwd = cwd or os.getcwd()
     cfg = load_config()
     vault = cfg["vault"]
     if not cfg["enabled"] or not vault.is_dir():
@@ -106,6 +135,8 @@ def main() -> int:
         else:
             lines += [f"- {p}" for p in pages]
         lines.append("")
+
+    lines += rules_block(cwd, cfg, L)
 
     # No "when to use it" block: the user's global CLAUDE.md already says
     # when to search the vault and who writes to it; a second copy here was

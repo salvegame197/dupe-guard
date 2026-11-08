@@ -168,7 +168,9 @@ The second brain writes it down for you, into a folder of markdown notes (the
 **vault**, which Obsidian opens as is, though nothing requires Obsidian):
 
 ```
-session starts   vault_context       compact index of the vault, never the whole vault
+session starts   vault_context       compact index of the vault, never the whole vault;
+                                     plus the "Rules in force" lines of the note of
+                                     the repo you are in, when the note has them
                  proposals_context   the harness's own proposals, waiting for you
 every prompt     recall              relevant notes injected, only above a threshold;
                                      only for a person's prompt (task notifications,
@@ -183,8 +185,15 @@ end of a turn    reindex             search index refreshed, at most every 15 mi
 session ends     session_log         the verifiable trace: requests, files, commits, tokens;
                                      a session that already wrote a memory note or a
                                      CLAUDE.md is not queued for distilling
+                 learned             a correction you made that the model accepted and
+                                     acted on becomes ONE draft line in the repo's
+                                     CLAUDE.md ("## Aprendido (revisar)") when the
+                                     repo is yours, or in Claude Code's memory for
+                                     that folder otherwise; approve by committing,
+                                     reject by deleting the line
 on demand        distill             a model turns the trace into decisions and pitfalls
-                                     inside the project's note
+                                     inside the project's note, and keeps up to 25
+                                     one-line "Rules in force" at its top
 ```
 
 Two levels, deliberately separate. `session_log` is cheap and deterministic
@@ -215,13 +224,21 @@ one. Two tools deal with that:
   longer the ruler (it is 0 in 1,145 injections). `--strength` turns the
   first and third signals into the multiplier recall applies to each page;
   a page with no signal stays neutral instead of fading.
-- **Proposals.** At the end of each session the harness proposes changes to
-  itself from evidence: a correction the model admitted becomes a draft
-  convention for the repo. They land on a page in the vault with checkboxes.
-  **Nothing applies itself**: you decide (in chat is fine), then
-  `proposals.py --apply`. (Stopword proposals from "a recalled page nobody
-  read" are no longer generated: the model never opens the page, so every
-  injection became one.)
+- **Learned from corrections (`learned.py`).** The triad "you corrected,
+  the model admitted, the model edited something" becomes one line, in your
+  words, where the next session reads it: the repo's `CLAUDE.md` (section
+  `## Aprendido (revisar)`, newest first) when the repo is yours (no remote,
+  or a remote under `learned.own_remotes`), or
+  `~/.claude/projects/<folder>/memory/aprendido-<repo>.md` otherwise. At most
+  three per session, never twice, never over a `CLAUDE.md` with somebody's
+  uncommitted change (the line waits and is retried). Every decision is
+  logged; `hit_rate.py` reports how many lines survived, reached a commit,
+  or were deleted. `learned.py --dry-run` shows what the history would have
+  produced. No model call.
+- **Proposals.** The page in the vault now only receives `stale` items
+  (from `freshness.py`). `convention` lines are no longer generated (the
+  extractor above replaced them) and `stopword` ones neither; lines already
+  on the page are still honoured by `proposals.py --apply`.
 - **`freshness.py`** checks the facts a note states that the disk can
   answer: every file path a project note mentions is looked up in every
   known repository, on every branch. A path nobody has becomes a `stale`

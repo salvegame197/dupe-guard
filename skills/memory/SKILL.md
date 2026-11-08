@@ -140,13 +140,46 @@ page in the vault (`truth_page`, a markdown table with `question` and
 and after any change to recall: `--save` keeps the run, `--diff` compares
 the last two. hit, miss and silent are counted apart on purpose.
 
+## Learned from corrections
+
+At the end of each session `learned.py` looks for the triad "the user
+corrected or stated a rule, the model admitted or accepted it, the model
+edited something in that turn" and writes ONE draft line per triad (at most
+three per session, the user's own words, dated, with the session id):
+
+- in the repo's `CLAUDE.md`, section `## Aprendido (revisar)` (`## Learned
+  (review)` in English), newest first, when the repo is the user's own (no
+  remote, or a remote under `learned.own_remotes`, e.g.
+  `["github.com/me/"]`);
+- in `~/.claude/projects/<folder>/memory/aprendido-<repo>.md` (type
+  `feedback`, pointer in `MEMORY.md`) when the repo belongs to someone else
+  or there is no repo.
+
+Approving is the commit the user makes anyway; rejecting is deleting the
+line. A `CLAUDE.md` with someone's uncommitted change is never touched: the
+line waits in `brain/aprendido-pendente.jsonl` and is retried at the next
+session end. Everything is logged in `brain/aprendido-log.jsonl`;
+`hit_rate.py` reports what survived. `learned.py --dry-run` shows what the
+transcripts on disk would produce, writing nothing. Config: `learned:
+{"enabled": true, "own_remotes": [], "max_per_session": 3}`.
+
+## Rules in force
+
+The distiller returns, after the dated block, up to five one-line rules
+(a decision, a pitfall, a "do not"); they go to a fixed `## Regras em vigor`
+(`## Rules in force`) section right after the note's title and summary,
+newest first, each with the date and a `[[note#section]]` link to the block
+it came from. Cap of 25; a rule superseded by a newer one, or whose section
+was marked superseded, moves to `## Regras superadas` at the end of the
+note, dated, never deleted. `vault_context` injects those lines at session
+start for the repo's note, and `recall` takes its snippet from them first.
+
 ## Proposals
 
-At the end of each session the harness proposes changes to itself from
-evidence: a correction the model admitted becomes a draft **convention** for
-the repo. They go to the proposals page with checkboxes. (A `stopword` line
-written by hand is still applied; the harness stopped proposing them, since
-the model never opens an injected page and every injection became one.)
+The proposals page now only receives `stale` items (from `freshness.py`).
+`convention` lines are no longer generated (see "Learned from
+corrections"); `stopword` neither. Lines already on the page, of any kind,
+are still applied by `--apply`.
 
 **Never apply a proposal on your own.** Show them, give an opinion per item
 ("not reading a page is not the same as it being irrelevant"), and let the user

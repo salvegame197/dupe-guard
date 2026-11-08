@@ -2,10 +2,17 @@
 """
 proposals — the harness proposes changes to itself; a human approves.
 
-Every proposal comes from objective evidence in a session, never opinion:
-  - the user corrected the model and the
-    model admitted it                   -> the user's words become a draft
-                                           convention for the repo
+Every proposal comes from objective evidence in a session, never opinion.
+Since 2026-11-08 the page only receives the `stale` kind (a path a note
+cites that no repo has, from brain/freshness.py). The two other kinds are
+read, never written:
+
+  - `convention` (the user corrected the model and the model admitted it)
+    is not generated any more: in seven weeks 21 were proposed and none
+    applied. The same evidence now becomes a draft line where the next
+    session reads it, the repo's CLAUDE.md or the native memory
+    (brain/learned.py). Lines already on the page can still be approved
+    with `--apply`.
 
 The `stopword` category (a term that matched the title of an injected page
 the model did not open) is no longer generated, since 2026-11-08: the model
@@ -58,7 +65,7 @@ ADMISSION = {
     "en": (r"\b(i made (that|it) up|i was wrong|my mistake|you're right|you are right"
            r"|i got (that|it) wrong|i invented|i confused|that was wrong of me|i stand corrected)\b"),
     "pt": (r"\b(fui eu que|eu inventei|eu errei|errei|meu erro|corrigido|voce tem razao|você tem razão"
-           r"|tem razao|tem razão|esta certo|está certo|eu que (errei|inventei|confundi)|foi erro meu"
+           r"|tem razao|tem razão|eu que (errei|inventei|confundi)|foi erro meu"
            r"|me enganei|eu confundi|retiro o que)\b"),
 }
 
@@ -116,7 +123,6 @@ def generate(transcript, sid, cwd, cfg):
     L = labels(cfg)
     ev = events(transcript)
     props, info = [], []
-    repo = git_root_name(cwd) if cwd else ""
 
     # --- recall: how many injections, how many followed by a Read of the
     # page. Information only; it no longer proposes stopwords (see the
@@ -138,24 +144,10 @@ def generate(transcript, sid, cwd, cfg):
     if injections:
         info.append(L["proposal_injections"].format(inj=injections, read=read))
 
-    # --- admitted corrections -> draft convention
-    correction = re.compile("|".join(CORRECTION[l] for l in cfg["languages"]), re.I)
-    admission = re.compile("|".join(ADMISSION[l] for l in cfg["languages"]), re.I)
-    for i, (ts, k, c) in enumerate(ev):
-        if k != "prompt" or len(c.strip()) < 15 or not correction.search(c):
-            continue
-        # The model's WHOLE turn, not its first block: the admission usually
-        # comes after checking, at the end of the answer.
-        turn = ev[i + 1:i + 80]
-        end = next((j for j, (_, k2, _) in enumerate(turn) if k2 == "prompt"), len(turn))
-        reply = " ".join(d for _, k2, d in turn[:end] if k2 == "text")
-        m = admission.search(reply)
-        if not m:
-            continue
-        said = " ".join(c.split())[:220]
-        hour = ts[11:16] if len(ts) >= 16 else ""
-        props.append({"kind": "convention", "target": repo or "global",
-                      "text": f'"{said}" — {hour}, model: "{m.group(0)}"'})
+    # Admitted corrections no longer become `convention` proposals here:
+    # brain/learned.py turns them into a line in the repo's CLAUDE.md or
+    # the native memory at the same SessionEnd. CORRECTION and ADMISSION
+    # above stay as the shared vocabulary (learned.py, hit_rate.py).
     return props, info
 
 
