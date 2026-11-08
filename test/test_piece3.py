@@ -401,3 +401,31 @@ class Outcomes(Piece3Case):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MemoryDescriptionGate(unittest.TestCase):
+    """The name of a native memory opens the recall gate on one term; its
+    one-line description, a whole sentence, needs two distinct terms."""
+
+    def rows(self):
+        return [
+            {"id": "memory/-x-other-repo/proxy-flake.md", "score": 99.0, "source": "memory",
+             "title": "proxy-tests-harness-flake", "desc": "proxy.rs reuses a keep-alive client; under stress the test may swap a rare status"},
+            {"id": "memory/-x-access/never-reset.md", "score": 98.0, "source": "memory",
+             "title": "never-reset-turnstile", "desc": "do not reset the turnstile counter before syncing"},
+        ]
+
+    def test_one_description_word_does_not_open_the_gate(self):
+        from brain import recall
+        picked = recall.pick(self.rows(), ["test", "discount"], set(), "s")
+        self.assertEqual([r["id"] for r in picked], [])
+
+    def test_two_description_words_do(self):
+        from brain import recall
+        picked = recall.pick(self.rows(), ["turnstile", "syncing"], set(), "s")
+        self.assertEqual([r["id"] for r in picked], ["memory/-x-access/never-reset.md"])
+
+    def test_one_name_word_still_does(self):
+        from brain import recall
+        picked = recall.pick(self.rows(), ["flake", "discount"], set(), "s")
+        self.assertEqual([r["id"] for r in picked], ["memory/-x-other-repo/proxy-flake.md"])

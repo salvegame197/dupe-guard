@@ -382,9 +382,17 @@ def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14
         # corpus frequency, so no IDF threshold separates them, while the title
         # is the subject already distilled.
         # A native memory note's one-line description is its subject as
-        # much as the name is; both face the gate.
-        subject = " ".join(x for x in (r.get("title"), r.get("desc")) if x)
-        if not title_hit(terms, subject, aliases):
+        # much as the name is, but it is a whole sentence: one shared word
+        # ("proxy", "teste") is a collision, not a subject. The name opens
+        # the gate on one term; the description needs two distinct terms.
+        # Measured live on 2026-11-08: with one term, a other-repo memory
+        # about proxy test flakes entered a shop-admin prompt about discounts.
+        if r["source"] == "memory":
+            hit = title_hit(terms, r.get("title") or "", aliases) or \
+                sum(1 for t in terms if title_hit([t], r.get("desc") or "", aliases)) >= 2
+        else:
+            hit = title_hit(terms, " ".join(x for x in (r.get("title"), r.get("desc")) if x), aliases)
+        if not hit:
             # A curated note may still qualify on its body alone, with a
             # higher bar; a chat log or a session may not.
             curated = r["source"] == "vault" and any(r["id"].startswith(p) for p in trusted)
