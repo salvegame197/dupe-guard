@@ -409,10 +409,12 @@ class MemoryDescriptionGate(unittest.TestCase):
 
     def rows(self):
         return [
-            {"id": "memory/-x-other-repo/proxy-flake.md", "score": 99.0, "source": "memory",
+            {"id": "memory/-x-other-repo/proxy-flake.md", "score": 99.0, "source": "memory", "project": "other-repo",
              "title": "proxy-tests-harness-flake", "desc": "proxy.rs reuses a keep-alive client; under stress the test may swap a rare status"},
-            {"id": "memory/-x-access/never-reset.md", "score": 98.0, "source": "memory",
+            {"id": "memory/-x-access/never-reset.md", "score": 98.0, "source": "memory", "project": "gate-control",
              "title": "never-reset-turnstile", "desc": "do not reset the turnstile counter before syncing"},
+            {"id": "memory/-home/commits.md", "score": 97.0, "source": "memory", "project": "~",
+             "title": "commits-sem-coautoria", "desc": "public repos: commit message in english, no trailer"},
         ]
 
     def test_one_description_word_does_not_open_the_gate(self):
@@ -420,10 +422,19 @@ class MemoryDescriptionGate(unittest.TestCase):
         picked = recall.pick(self.rows(), ["test", "discount"], set(), "s")
         self.assertEqual([r["id"] for r in picked], [])
 
-    def test_two_description_words_do(self):
+    def test_two_description_words_need_the_project_named(self):
         from brain import recall
-        picked = recall.pick(self.rows(), ["turnstile", "syncing"], set(), "s")
+        # "counter" and "syncing" are in the description only; the name
+        # ("never-reset-turnstile") would open the gate on "turnstile" alone.
+        picked = recall.pick(self.rows(), ["counter", "syncing"], set(), "s")
+        self.assertEqual([r["id"] for r in picked], [])
+        picked = recall.pick(self.rows(), ["counter", "syncing", "gate-control"], set(), "s")
         self.assertEqual([r["id"] for r in picked], ["memory/-x-access/never-reset.md"])
+
+    def test_a_home_memory_has_no_project_to_name(self):
+        from brain import recall
+        picked = recall.pick(self.rows(), ["english", "trailer"], set(), "s")
+        self.assertEqual([r["id"] for r in picked], ["memory/-home/commits.md"])
 
     def test_one_name_word_still_does(self):
         from brain import recall

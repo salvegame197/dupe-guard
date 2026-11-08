@@ -387,9 +387,15 @@ def pick(results, terms, seen, session_id, aliases=None, trusted=(), body_min=14
         # the gate on one term; the description needs two distinct terms.
         # Measured live on 2026-11-08: with one term, a other-repo memory
         # about proxy test flakes entered a shop-admin prompt about discounts.
+        # And a description of another project's memory only when the
+        # prompt names that project: "cliente" + "app" in a shop-admin
+        # prompt are not about the Qlyne hosting note. Memories of the
+        # home folder (~) have no project and keep the two-term rule.
         if r["source"] == "memory":
+            project = r.get("project") or ""
+            named = project in ("", "~") or title_hit(terms, project, aliases)
             hit = title_hit(terms, r.get("title") or "", aliases) or \
-                sum(1 for t in terms if title_hit([t], r.get("desc") or "", aliases)) >= 2
+                (named and sum(1 for t in terms if title_hit([t], r.get("desc") or "", aliases)) >= 2)
         else:
             hit = title_hit(terms, " ".join(x for x in (r.get("title"), r.get("desc")) if x), aliases)
         if not hit:
