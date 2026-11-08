@@ -196,8 +196,12 @@ class NoCard(IdeasCase):
              "variants": [], "pages": ["Claude Web/Viagens/Viagem para Trancoso.md"]}]}))
         self.reindex()
         from brain import catalog, core
+        # In-process, load_config() reads the REAL ~/.dupe-guard (DUPE_GUARD_HOME
+        # only reaches the subprocesses above), so mirror the test config here:
+        # on a machine without one, the default "en" knows no "carro".
         cfg = core.load_config()
         cfg["vault"] = self.vault
+        cfg["languages"] = ["pt"]
         # the resolver still works, offline
         self.assertEqual([e["id"] for e, _, _ in catalog.resolve("qual é o meu carro?", cfg)], ["vehicle-fiat-argo"])
         # but "meu carro" alone brings nothing into the session any more

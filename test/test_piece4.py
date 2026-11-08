@@ -42,9 +42,21 @@ def model(text, cwd, ts="2026-11-04T10:00:20Z", edit=None):
     return line(type="assistant", cwd=cwd, timestamp=ts, message={"role": "assistant", "content": content})
 
 
+def scratch_free_tmp(prefix: str) -> Path:
+    """learned.py ignores edits under /tmp (the model's scratchpad), and on
+    Linux tempfile puts everything there, so the fake repos would never
+    show a "real" edit. Keep them somewhere else on such systems."""
+    base = tempfile.gettempdir()
+    where = None
+    if base.startswith(("/tmp", "/private/tmp")):
+        where = os.environ.get("RUNNER_TEMP") or str(Path.home() / ".cache" / "dupe-guard-tests")
+        Path(where).mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=where)).resolve()
+
+
 class Piece4Case(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="dupe-guard-p4-")).resolve()
+        self.tmp = scratch_free_tmp("dupe-guard-p4-")
         self.home = self.tmp / "home"
         self.vault = self.tmp / "vault"
         self.repo = self.tmp / "billing-api"            # no remote: the user's own
