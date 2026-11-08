@@ -4,12 +4,24 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      # One leg failing must not cancel the others: the 3.9 leg has failed on
+      # runner images alone (no 3.9 build for a new ubuntu-latest), and the
+      # cancelled legs hid whether the code itself still passed.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
         python: ["3.9", "3.12"]
+        exclude:
+          # setup-python ships no 3.9 for the newest ubuntu-latest image;
+          # 3.9 is tested on a pinned image instead (include below).
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-24.04
+            python: "3.9"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s test -v

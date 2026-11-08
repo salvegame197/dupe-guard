@@ -10,10 +10,11 @@ A Claude Code plugin with two jobs:
 
 ## The guard
 
-It runs on `PreToolUse` for `Write`, `Edit` and `MultiEdit`, and on
-`PostToolUse` for `Bash`. Before the model commits code to disk (or, for Bash,
-right after the command changed the repo), the hook indexes the repository and
-asks two questions:
+It runs on `PreToolUse` for `Write`, `Edit` and `MultiEdit`, and around
+`Bash`: a `PreToolUse` stamp when the command starts, the check on
+`PostToolUse` once it ends. Before the model commits code to disk (or, for
+Bash, right after the command changed the repo), the hook indexes the
+repository and asks two questions:
 
 1. **Does a symbol with this name already exist?** (the easy half)
 2. **Does this exact body already exist under a different name?** (the half a
@@ -36,7 +37,10 @@ Measured on one real setup over eleven days: 50 writes went through `Write` or
 `python - <<PY`). A guard that only listens to `Write`/`Edit` was blind to 96%
 of the code. The Bash path cannot see the code beforehand, so it looks at
 `git status` right after the command and analyses only the added lines of code
-files changed in the last 90 seconds. Untracked files count whole.
+files modified since the command started (the `PreToolUse` stamp; 90 seconds
+at most). Untracked files count whole. A file another session saved in the
+same working tree while this command ran is left out: that is what the stamp
+is for.
 
 ## Why before and not after
 
@@ -279,16 +283,23 @@ search falls back to keywords on its own. Nothing leaves the machine.
 ### Privacy
 
 Everything stays on your machine: the vault, the index, the queue. The only
-thing that leaves it is what `distill` sends to Claude when you run it (the
-project note and that session's conversation), through your own Claude Code.
+thing that leaves it is what `distill` (and the catalog) sends to Claude (the
+project note and that session's trace), through your own Claude Code by
+default; when `ANTHROPIC_API_KEY` is set, the worker runs `claude -p --bare`
+with that key instead, with no settings, hooks or tools of yours loaded.
+Prompts are passed through a secret redaction before they are queued or sent,
+so a key pasted into the chat does not end up in the vault or at the model.
 
 ## Where it writes
 
-Everything goes to `~/.dupe-guard/` (`cache/`, `state/`, `conventions/`, and
-`brain/` for the second brain's index and queue), except the vault itself,
-which defaults to `~/second-brain`.
-Override with `DUPE_GUARD_HOME`. It writes nothing into your repositories.
-Session state older than 7 days is pruned automatically.
+Everything goes to `~/.dupe-guard/` (`cache/`, `state/`, `conventions/`,
+`brain/` for the second brain's index and queue, and `worker/`, the empty
+folder the distill worker runs in), except the vault itself, which defaults
+to `~/second-brain`. Override with `DUPE_GUARD_HOME`. The one thing it writes
+into a repository of yours is the draft lines of `## Aprendido (revisar)` in
+its `CLAUDE.md` (see [Learned from corrections](#a-harness-that-corrects-itself)),
+and only when the repo is yours; nothing else. Session state older than 7
+days is pruned automatically.
 
 The guard only acts inside git repositories. Outside one, the natural fallback
 would be to index the file's parent folder, and for `~/Documents/x.py` that is
@@ -315,20 +326,29 @@ DUPE_GUARD_HOME=/tmp/qg-demo python3 guard.py < examples/payload.json
 python3 -m unittest discover -s test -v
 ```
 
-The hook has thirteen end-to-end cases run `guard.py` the way Claude Code does, JSON on stdin,
-against a throwaway git repo: clone detected, silence on unrelated code, silence
-on garbage input, other tools ignored, no repeated warning in a session, silence
-outside git, old state pruned, test files skipped; and for the Bash path: new
-file caught after the fact, clone appended to a tracked file caught, nothing
-changed is silent, `cd` into a repo from elsewhere, stale changes ignored.
+149 tests in all. The hook has sixteen end-to-end cases that run `guard.py`
+the way Claude Code does, JSON on stdin, against a throwaway git repo: clone
+detected, silence on unrelated code, silence on garbage input, other tools
+ignored, no repeated warning in a session, silence outside git, old state
+pruned, test files skipped; and for the Bash path: new file caught after the
+fact, clone appended to a tracked file caught, nothing changed is silent, `cd`
+into a repo from elsewhere, stale changes ignored, and a file another session
+changed before this command's stamp ignored.
 
-The second brain has seventeen: off until enabled, the session log (recorded,
-queued, idempotent, silent without substance), the vault index, search in a
-hidden-folder vault, recall speaking and staying quiet, proposals from an unread
-page and from an admitted correction, and `distill` against a fake `claude`
-(dry run, insertion before the closing section with the session's date, one
-retry on bad format, giving up after two, EMPTY, staleness needing a majority,
-commits without trailers).
+The second brain has forty-six in `test_brain.py`: off until enabled, the
+session log (recorded, queued, idempotent, silent without substance), the
+vault index, search in a hidden-folder vault, recall speaking and staying
+quiet, proposals from an unread page and from an admitted correction, and
+`distill` against a fake `claude` (dry run, insertion before the closing
+section with the session's date, one retry on bad format, giving up after
+two, EMPTY, staleness needing a majority, commits without trailers). The
+review of 2026-11-08 added seventy-one more (`test_review`, `test_ideas`,
+`test_piece3`, `test_piece4`): the worker's child flags and empty folder,
+secret redaction, data-less sessions skipped, non-human prompts skipped,
+chat exports muted in a code session, native memory indexed and gated by
+name and description, the strength factor, the learned triad and its
+targets, rules in force, the hit-rate signals, and proposals no longer
+drafting stopword or convention lines.
 
 The install path has seven: everything `hooks.json` declares gets registered,
 running it again syncs without duplicating, an older install picks up new
