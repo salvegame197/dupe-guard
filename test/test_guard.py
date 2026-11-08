@@ -182,3 +182,29 @@ class GuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChangedCodeSinceStamp(unittest.TestCase):
+    """PostToolUse Bash only looks at files changed after the command
+    started; an older change in the same tree belongs to another chat."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        subprocess.run(["git", "init", "-q", str(self.tmp)], check=True)
+        (self.tmp / "a.py").write_text("def one():\n    return 1\n")
+        subprocess.run(["git", "-C", str(self.tmp), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.tmp), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "commit", "-qm", "init"], check=True)
+        (self.tmp / "a.py").write_text("def one():\n    return 1\n\ndef two():\n    return 2\n")
+        sys.path.insert(0, str(ROOT))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_file_older_than_the_stamp_is_another_chats(self):
+        import guard, csearch
+        now = time.time()
+        os.utime(self.tmp / "a.py", (now - 30, now - 30))
+        self.assertEqual(guard.changed_code(self.tmp, csearch, since=now - 5), [])
+        self.assertEqual([Path(f).name for f, *_ in guard.changed_code(self.tmp, csearch, since=0.0)], ["a.py"])
+        self.assertEqual([Path(f).name for f, *_ in guard.changed_code(self.tmp, csearch, since=now - 60)], ["a.py"])

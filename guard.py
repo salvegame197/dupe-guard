@@ -130,14 +130,21 @@ def roots_for(cmd: str, cwd: str, csearch):
     return roots
 
 
-def changed_code(root, csearch):
+def changed_code(root, csearch, since: float = 0.0):
     """[(path, added_code, lang, existing_symbols)] for code files this command
     changed. Tracked: only the added lines, and the symbols HEAD already had.
-    Untracked: the whole file, nothing pre-existing."""
+    Untracked: the whole file, nothing pre-existing.
+
+    `since` is when this command started (stamped by the PreToolUse hook).
+    A file older than that was changed by someone else: another session
+    editing the same working tree, which is how parallel Claude Code chats
+    work here. Without the stamp the 90 s window was the only guard, and it
+    attributed the other chats' Rust edits to this one (2026-11-08)."""
     status = git(root, "status", "--porcelain", "--untracked-files=all")
     if not status:
         return []
     now = time.time()
+    floor = max(now - RECENT, since - 1.0)
     found = []
     for line in status.splitlines():
         if len(line) < 4:
@@ -154,7 +161,7 @@ def changed_code(root, csearch):
             st = p.stat()
         except OSError:
             continue
-        if now - st.st_mtime > RECENT or st.st_size > csearch.MAX_BYTES:
+        if st.st_mtime < floor or st.st_size > csearch.MAX_BYTES:
             continue
         if code == "??":
             try:
@@ -297,10 +304,19 @@ def main() -> int:
         if not (root / ".git").exists():
             return 0
         targets.append((fpath, code, lang, already, root))
+    elif tool == "Bash" and event == "PreToolUse":
+        # Stamp when the command starts; PostToolUse ignores files older
+        # than this (another chat's edits in the same working tree).
+        sid = payload.get("session_id") or ""
+        st = load_state(sid)
+        st["bash_started"] = time.time()
+        save_state(sid, st)
+        return 0
     elif tool == "Bash" and event == "PostToolUse":
         after = True
+        since = float(load_state(payload.get("session_id") or "").get("bash_started") or 0.0)
         for root in roots_for(ti.get("command") or "", cwd, csearch):
-            for fpath, code, lang, already in changed_code(root, csearch):
+            for fpath, code, lang, already in changed_code(root, csearch, since):
                 targets.append((fpath, code, lang, already, root))
             if len(targets) >= MAX_FILES:
                 break
